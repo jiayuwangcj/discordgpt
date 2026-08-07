@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+instances/*.env
+.state/
+*.log
+schemas/
