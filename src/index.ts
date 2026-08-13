@@ -8,6 +8,7 @@ import { CodexAppServer } from "./codex-app-server.js";
 import { formatHistory, parseHistoryRequest } from "./history.js";
 import { prepareTurnInput } from "./attachments.js";
 import { ProgressRelay } from "./progress-relay.js";
+import { initialPresence, presenceContext, startPresenceUpdates } from "./presence.js";
 
 const state = new StateStore(config.stateDir);
 const codex = new CodexAppServer(config.codexBin, config.projectDir, {
@@ -15,6 +16,7 @@ const codex = new CodexAppServer(config.codexBin, config.projectDir, {
   sandbox: config.sandbox,
   approvalPolicy: config.approvalPolicy,
 }, config.appServerUrl ? { url: config.appServerUrl, token: config.appServerToken } : undefined);
+const presence = presenceContext(config.projectDir);
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -23,6 +25,7 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel, Partials.Message],
+  presence: initialPresence(presence),
 });
 
 const queues = new Map<string, Promise<void>>();
@@ -144,7 +147,10 @@ client.on("messageCreate", (message) => {
   queues.set(message.channelId, next);
 });
 
-client.once("ready", () => console.log(`Discord bot ready as ${client.user?.tag}; project=${config.projectDir}`));
+client.once("ready", () => {
+  console.log(`Discord bot ready as ${client.user?.tag}; project=${config.projectDir}`);
+  if (client.user) startPresenceUpdates(client.user, presence);
+});
 codex.on("log", (line) => { if (line) console.error(`[codex] ${line}`); });
 
 await fs.access(config.projectDir);

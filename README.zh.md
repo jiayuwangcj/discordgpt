@@ -19,8 +19,9 @@
 - `workspace-write` sandbox，默认不允许任何权限升级
 - `!codex status`、`!codex stop`、`!codex reset`
 - 按需读取当前频道最近 1–100 条历史消息；默认不会读取
-- PNG、JPEG、WebP 图片附件会作为受限的本地多模态输入
+- 附件 URL 会加入任务上下文
 - 超过 Discord 消息长度的回复自动分段
+- Discord 在线绿点与 HPC presence：显示计算节点、Slurm 剩余时间和项目名，每 15 分钟刷新
 
 ## 安全模型
 
@@ -49,7 +50,7 @@ Discord 是一个远程代码执行入口，务必保持最小权限：
 要求 Node.js 20+、Codex CLI，并且已经完成 `codex login`。
 
 ```bash
-cd /path/to/codex-chat-bridge/packages/discord-bridge
+cd ~/codex_home_sandbox/codex-discord-multibot
 npm install
 cp .env.example .env
 chmod 600 .env
@@ -76,7 +77,7 @@ npm start
 仓库提供 [codex-dc.bash](codex-dc.bash)，但不会自动修改 `.bashrc`。在测试阶段可以只对当前 shell 临时加载：
 
 ```bash
-source /path/to/codex-chat-bridge/packages/discord-bridge/codex-dc.bash
+source ~/codex_home_sandbox/codex-discord-multibot/codex-dc.bash
 ```
 
 在目标项目目录初始化并启动：
@@ -89,9 +90,11 @@ codex-dc
 
 `codex-dc` 会在后台启动本机 app-server 和该项目的 Discord bridge，然后当前终端直接进入共享 thread 的 Codex TUI。退出这个 TUI 后，后台 bridge 和 app-server 一并停止，行为与 `claude-dc` 接近。
 
-普通任务执行期间，bridge 会把 Codex 的 `commentary` 中间进度按句子节流后立即回复到 Discord（以 `⏳` 开头），不再等到整个 turn 完成。最终答案仍会作为独立消息发送，final delta 不会被重复推送。
+普通文本生成期间，bridge 会缓存 Codex 的 `commentary`；仅在工具、命令或文件修改即将开始前，把此前累计内容作为一条 `⏳` 消息发到 Discord。工具结束后重新缓存，最终答案完整独立发送。时间、字符数、标点和换行均不会自行触发中间消息。
 
 Discord 的 PNG、JPEG 和 WebP 图片附件会从 Discord CDN 受限下载（单张最多 20 MiB），作为 Codex app-server 的 `localImage` 输入，因此 Codex 可以直接识别截图。临时图片在 turn 结束后自动删除；其他附件仍以 URL 和文件名作为文本上下文。
+
+Bot presence 会显示 `node177 · ⏳6d19h · project-name`。绿点表示 Discord Gateway 当前仍连接；进程或 allocation 结束后会自动变灰。节点来自 `SLURMD_NODENAME`/hostname，剩余时间由当前进程的 `SLURM_JOB_ID` 异步查询 `squeue %L`，每 15 分钟刷新一次；非 Slurm 环境自动退化为 `node · project`。
 
 可用函数：
 
@@ -105,7 +108,7 @@ Discord 的 PNG、JPEG 和 WebP 图片附件会从 Discord CDN 受限下载（�
 隔离状态布局：
 
 ```text
-~/.codex-discord/
+~/codex_home_sandbox/.codex-discord/
 ├── <project-basename>/
 │   ├── instance.env       # token/config, chmod 600
 │   ├── thread-id          # TUI 与 Discord 共同恢复的 thread
@@ -225,6 +228,44 @@ WebSocket 默认只允许 `ws://127.0.0.1:*` 或 `ws://localhost:*`。不要把�
 
 - MVP 暂不在 Discord 中提供交互式审批；越权请求一律拒绝。
 - `stop` 只能中断正在执行的 turn，已排队消息仍会继续执行。
-- 图片附件限定为 Discord CDN 的 PNG、JPEG 和 WebP，单张最大 20 MiB；其他附件只提供元数据与 URL。
+- 附件目前作为 Discord CDN URL 传给 Codex，不会自动下载成本地文件。
 - app-server 接口由已安装 Codex CLI 提供；升级 Codex 后应重新运行测试。
 - TUI 需要先知道 Discord channel 对应的 thread ID；目前通过 `!codex status` 后运行 attach 脚本完成，尚未自动切换。
+
+## 实验性微信 ClawBot 桥接
+
+仓库另带一个独立的微信入口，用腾讯公开的 iLink/ClawBot 协议把微信私聊连接到同一个 Codex app-server。它不会启动 OpenClaw，也不会影响 Discord bridge。
+
+当前范围：
+
+- 微信 ClawBot 一对一私聊（官方通道当前不支持微信群）
+- 扫码授权，凭据以 `0600` 权限保存在独立 state 目录
+- 文字输入输出；语音消息有微信转写文字时也可作为输入
+- 扫码用户 allowlist
+- `CODEX_SHARED_THREAD_ID` 绑定现有 terminal thread
+- 长轮询 cursor 持久化与基本重试
+
+准备配置：
+
+```bash
+cp instances/weixin.env.example instances/my-weixin.env
+chmod 600 instances/my-weixin.env
+# 编辑项目路径、state 路径、app-server URL 和共享 thread ID
+npm run build
+```
+
+首次扫码授权：
+
+```bash
+node --env-file=instances/my-weixin.env dist/weixin-login.js
+```
+
+启动桥接：
+
+```bash
+node --env-file=instances/my-weixin.env dist/weixin-index.js
+```
+
+若扫码响应没有返回用户 ID，把首次消息日志中的 `from_user_id` 填入 `WEIXIN_ALLOWED_USER_IDS`。不要提交 state 目录或 credentials 文件，也不要把 app-server WebSocket 暴露到 HPC 外网。
+
+此入口目前是最小实验框架；图片/文件下载、输入状态、聊天命令以及生产级 token 失效恢复尚未实现。协议参考腾讯的 MIT 许可项目 `Tencent/openclaw-weixin`。

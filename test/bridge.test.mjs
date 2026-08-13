@@ -9,6 +9,7 @@ import { StateStore } from "../dist/state.js";
 import { parseHistoryRequest } from "../dist/history.js";
 import { ProgressRelay } from "../dist/progress-relay.js";
 import { prepareTurnInput } from "../dist/attachments.js";
+import { formatSlurmTimeLeft, presenceContext, presenceLabel } from "../dist/presence.js";
 
 test("history requests are explicit and bounded", () => {
   assert.equal(parseHistoryRequest("please read history"), undefined);
@@ -18,6 +19,20 @@ test("history requests are explicit and bounded", () => {
   });
   assert.equal(parseHistoryRequest("!codex history 999").limit, 100);
   assert.equal(parseHistoryRequest("!codex history 0").limit, 1);
+});
+
+test("Slurm presence formats time and falls back outside Slurm", () => {
+  assert.equal(formatSlurmTimeLeft("6-19:57:49\n"), "6d19h");
+  assert.equal(formatSlurmTimeLeft("7:45:21"), "7h45m");
+  assert.equal(formatSlurmTimeLeft("12:34"), "12m");
+  assert.equal(formatSlurmTimeLeft("INVALID"), "");
+  const context = presenceContext("/work/my-project", {
+    SLURMD_NODENAME: "node177.cluster",
+    SLURM_JOB_ID: "12345",
+  });
+  assert.deepEqual(context, { node: "node177", project: "my-project", slurmJobId: "12345" });
+  assert.equal(presenceLabel(context, "6d19h"), "node177 · ⏳6d19h · my-project");
+  assert.equal(presenceLabel({ node: "login05", project: "demo", slurmJobId: "" }), "login05 · demo");
 });
 
 test("shared WebSocket transport initializes and streams a turn", async () => {
