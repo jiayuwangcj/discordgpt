@@ -2,9 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 export type WorkspaceBinding = { workspace: string; cwd: string };
+export type ManagedTopic = { id: string; parentId: string; guildId: string; ownerId: string; name: string; workspace: string };
 type StateData = {
   threads: Record<string, string>;
   workspaces?: Record<string, WorkspaceBinding>;
+  managedTopics?: Record<string, ManagedTopic>;
 };
 
 export class StateStore {
@@ -33,6 +35,18 @@ export class StateStore {
   binding(channelId: string): WorkspaceBinding | undefined {
     const value = this.data.workspaces?.[channelId];
     return value ? { ...value } : undefined;
+  }
+
+  topics(parentId: string, ownerId: string): ManagedTopic[] {
+    return Object.values(this.data.managedTopics ?? {}).filter((topic) => topic.parentId === parentId && topic.ownerId === ownerId)
+      .map((topic) => ({ ...topic }));
+  }
+
+  async recordTopic(topic: ManagedTopic): Promise<void> {
+    if (!this.binding(topic.id)) throw new Error("Topic must have a workspace binding first");
+    this.data.managedTopics ??= {};
+    this.data.managedTopics[topic.id] = { ...topic };
+    await this.save();
   }
 
   async bindWorkspace(channelId: string, workspace: string, cwd: string): Promise<void> {

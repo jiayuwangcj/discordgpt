@@ -23,6 +23,7 @@ test("Discord topics retain separate workspaces and contexts across restart, inc
     await state.set("topic-a", "thread-a");
     await state.set("topic-b", "thread-b");
     await state.set("topic-c", "thread-c");
+    await state.recordTopic({ id: "topic-a", parentId: "main", guildId: "guild", ownerId: "owner", name: "开发", workspace: "a" });
     const restored = new StateStore(dir);
     await restored.load();
     const workspaces = { default: dir, a: "/work/a", b: "/work/b" };
@@ -31,6 +32,9 @@ test("Discord topics retain separate workspaces and contexts across restart, inc
     assert.equal(resolveWorkspace(restored, "dm", false, workspaces).cwd, dir);
     assert.equal(restored.get("dm"), "legacy-dm");
     assert.equal(restored.get("topic-c"), "thread-c");
+    assert.equal(restored.topics("main", "owner")[0].id, "topic-a");
+    assert.deepEqual(restored.topics("other-main", "owner"), []);
+    assert.deepEqual(restored.topics("main", "other-owner"), []);
     await restored.reset("topic-a");
     assert.equal(restored.get("topic-a"), undefined);
     assert.equal(restored.get("topic-c"), "thread-c");

@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { WebSocketServer } from "ws";
 
-for (const scenario of ["dm", "topics"]) test(`standalone bot process: ${scenario}`, { timeout: 20000 }, async () => {
+for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process: ${scenario}`, { timeout: 20000 }, async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "discordgpt-runtime-"));
   const bot = { id: "100000000000000001", username: "testbot", discriminator: "0001", avatar: null, bot: true };
   const user = { id: "100000000000000002", username: "tester", discriminator: "0001", avatar: null };
@@ -62,14 +62,28 @@ for (const scenario of ["dm", "topics"]) test(`standalone bot process: ${scenari
       const payload = JSON.parse(body);
       const replyChannel = req.url.match(/channels\/(\d+)/)[1];
       if (scenario === "dm") received(payload);
-      else if (payload.content.startsWith("Created topic")) {
+      else if (payload.content.startsWith("Created topic") || payload.content.startsWith("已创建话题")) {
         setTimeout(() => {
-          if (topics.length === 1) sendMessage(parent, "!codex topic beta Backend", 0);
+          if (scenario === "natural") {
+            sendMessage(parent, topics.length === 1 ? "打开 alpha" : "列出我的工作区和话题", 0);
+          } else if (topics.length === 1) sendMessage(parent, "!codex topic beta Backend", 0);
           else {
             sendMessage(topics[0].id, "alpha-task", 12);
             sendMessage(topics[1].id, "beta-task", 12);
             sendMessage(channel, "dm-task");
           }
+        }, 10);
+      } else if (scenario === "natural" && payload.content.startsWith("打开话题")) {
+        assert.equal(topics.length, 1);
+        setTimeout(() => sendMessage(parent, "给 beta 开一个话题，叫 Backend", 0), 10);
+      } else if (scenario === "natural" && payload.content.startsWith("工作区：")) {
+        assert.ok(payload.content.includes(topics[0].id) && payload.content.includes(topics[1].id));
+        setTimeout(() => sendMessage(parent, "修改工程代码", 0), 10);
+      } else if (scenario === "natural" && payload.content.startsWith("这里是工作区管理入口")) {
+        setTimeout(() => {
+          sendMessage(topics[0].id, "alpha-task", 12);
+          sendMessage(topics[1].id, "beta-task", 12);
+          sendMessage(channel, "dm-task");
         }, 10);
       } else if (payload.content === "Standalone reply") {
         replies.push({ ...payload, channel: replyChannel });
@@ -77,6 +91,8 @@ for (const scenario of ["dm", "topics"]) test(`standalone bot process: ${scenari
       }
       res.end(JSON.stringify({ id: "100000000000000005", channel_id: channel, author: bot,
         content: payload.content, timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [] }));
+    } else if (req.method === "GET" && topics.some((topic) => req.url.endsWith(`/channels/${topic.id}`))) {
+      res.end(JSON.stringify(topics.find((topic) => req.url.endsWith(`/channels/${topic.id}`))));
     } else if (req.url.includes(`/channels/${channel}`)) {
       res.end(JSON.stringify({ id: channel, type: 1, recipients: [user] }));
     } else { res.removeHeader("Content-Type"); res.statusCode = 204; res.end(); }
@@ -93,14 +109,15 @@ for (const scenario of ["dm", "topics"]) test(`standalone bot process: ${scenari
         v: 10, user: bot, guilds: [], session_id: "test-session", shard: [0, 1],
         resume_gateway_url: `ws://127.0.0.1:${gateway.address().port}`, application: { id: bot.id, flags: 0 },
       } }));
-      if (scenario === "topics") socket.send(JSON.stringify({ op: 0, t: "GUILD_CREATE", s: sequence++, d: {
+      if (scenario !== "dm") socket.send(JSON.stringify({ op: 0, t: "GUILD_CREATE", s: sequence++, d: {
         id: guild, name: "Test server", unavailable: false, owner_id: user.id, member_count: 2,
         roles: [{ id: guild, name: "@everyone", permissions: "8", position: 0, color: 0, hoist: false, managed: false, mentionable: false }],
         members: [bot, user].map((account) => ({ user: account, roles: [], joined_at: new Date().toISOString(), deaf: false, mute: false })),
         channels: [{ id: parent, guild_id: guild, type: 0, name: "codex", permission_overwrites: [] }],
         threads: [], emojis: [], stickers: [], presences: [], voice_states: [], features: [],
       } }));
-      setTimeout(() => scenario === "dm" ? sendMessage(channel, "hello") : sendMessage(parent, "!codex topic alpha Frontend", 0), 100);
+      setTimeout(() => scenario === "dm" ? sendMessage(channel, "hello") : sendMessage(parent,
+        scenario === "natural" ? "给 alpha 开一个话题，叫 Frontend" : "!codex topic alpha Frontend", 0), 100);
     });
   });
   let prompt;
@@ -127,7 +144,7 @@ for (const scenario of ["dm", "topics"]) test(`standalone bot process: ${scenari
       CODEX_DISCORD_STATE_DIR: path.join(dir, "state"),
       CODEX_WORKSPACES_FILE: workspaceFile,
       DISCORD_REQUIRE_MENTION: "true",
-      ...(scenario === "topics" ? { DISCORD_ALLOWED_CHANNEL_IDS: `${parent},${channel}`, CODEX_SHARED_THREAD_ID: "shared-dm" } : {}),
+      ...(scenario !== "dm" ? { DISCORD_ALLOWED_CHANNEL_IDS: `${parent},${channel}`, CODEX_SHARED_THREAD_ID: "shared-dm" } : {}),
       CODEX_DISCORD_ENV_FILE: path.join(dir, "missing.env"),
       CODEX_APP_SERVER_URL: `ws://127.0.0.1:${codex.address().port}`,
       DISCORD_API_BASE_URL: `http://127.0.0.1:${api.address().port}/api` },

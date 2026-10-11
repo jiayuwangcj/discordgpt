@@ -88,6 +88,22 @@ If creating a topic or adding its requester fails, inspect host logs and the
 server's private-thread list before retrying; an already-created thread may remain.
 This version does not automatically adopt manually-created threads.
 
+The parent text channel is a management-only entry point in v0.3.0. Chinese
+natural-language intents invoke the same creation tool as `!codex topic` and can
+open/list registered topics. Ordinary engineering prompts and history requests
+in the parent channel return guidance instead of starting a model turn. DMs and
+native topics continue to execute engineering tasks normally. Mentions are still
+required in the parent unless `DISCORD_REQUIRE_MENTION=false`.
+
+Topic navigation is indexed by parent channel and creator user in `state.json`;
+it survives restarts. Legacy v0.2.0 topics without creator records remain usable
+but are not automatically indexed. Clarification state is memory-only, user/channel
+scoped, expires after five minutes and is not recovered after restart. Opening an
+archived indexed topic unarchives it and restores creator membership; locked or
+deleted topics fail without creating a replacement context. Natural deletion and
+reset are intentionally unavailable. Host logs include structured creation/open
+events without full prompts or workspace paths.
+
 Each channel maps to a thread in `state.json`; keep the state directory when
 upgrading. Resume errors retain that binding. Use `!codex reset` only when
 intentionally starting a new conversation. Reset is blocked during queued

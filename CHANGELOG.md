@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.0 — 2026-10-11
+
+- Added bounded Chinese natural-language workspace management in server parent chats.
+- Reusable creation/open/list tools; command and natural-language creation share one implementation.
+- Persistent creator/parent-scoped topic index, clickable navigation, existing-topic reuse,
+  ambiguity clarification and same-name creation protection.
+- Main chats no longer execute arbitrary engineering prompts; native topics and DMs are unchanged.
+- Archived-topic reopening, locked-topic failure and structured management logs.
+- No additional MCP service, model inference or remote account permissions required.
+
+Validation: 23 automated tests, type checking, zero dependency advisories and actual
+installed Codex app-server handshake. Simulated standalone runtime covers natural
+creation, existing-topic opening, listing and parent-chat execution refusal, alongside
+independent engineering turns in two topics and a DM.
+
+Live Discord deployment is still separate from simulated runtime acceptance;
+the existing wbot bot is not switched by this release.
+
 ## v0.2.0 — 2026-10-11
 
 - Added native Discord private topics bound to configured workspace aliases.

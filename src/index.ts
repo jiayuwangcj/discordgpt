@@ -13,6 +13,7 @@ import { splitReply } from "./format.js";
 import { dispatchMessage } from "./dispatch.js";
 import { loadWorkspaces } from "./workspaces.js";
 import { resolveWorkspace, topicRequest } from "./topic-routing.js";
+import { WorkspaceAssistant, managementHelp } from "./workspace-assistant.js";
 import { initialPresence, presenceContext, startPresenceUpdates } from "./presence.js";
 
 const state = new StateStore(config.stateDir);
@@ -37,8 +38,10 @@ const client = new Client({
 
 const queues = new ChannelQueue();
 const controls = new ChannelQueue();
+const assistant = new WorkspaceAssistant();
 let workspaces: Record<string, string> = { default: config.projectDir };
 const active = new Map<string, { threadId: string; turnId: string }>();
+class UserVisibleError extends Error {}
 function queueKey(channelId: string): string {
   return config.sharedThreadId && !state.binding(channelId) ? `thread:${config.sharedThreadId}` : channelId;
 }
@@ -79,6 +82,49 @@ async function getThread(channelId: string): Promise<string> {
   return threadId;
 }
 
+/** Shared, controlled tool for both command and natural-language creation. */
+async function createTopic(message: Message, workspace: string, name: string) {
+  if (!Object.hasOwn(workspaces, workspace) || !name.trim() || name.length > 100) throw new Error("Invalid workspace/topic name");
+  if (message.channel.type !== ChannelType.GuildText) throw new Error("Topics require a server text channel");
+  const permissions = message.channel.permissionsFor(client.user!);
+  if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.CreatePrivateThreads,
+    PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads])) {
+    throw new UserVisibleError("Bot needs View Channel, Send Messages, Read Message History, Create Private Threads, Send Messages in Threads and Manage Threads.");
+  }
+  const thread = await message.channel.threads.create({ name, type: ChannelType.PrivateThread,
+    invitable: false, autoArchiveDuration: 1440, reason: "discordgpt isolated workspace" });
+  await state.bindWorkspace(thread.id, workspace, workspaces[workspace]);
+  const topic = { id: thread.id, parentId: message.channelId, guildId: message.guildId!, ownerId: message.author.id, name, workspace };
+  await state.recordTopic(topic);
+  console.log(JSON.stringify({ event: "workspace.topic.created", channelId: message.channelId, topicId: thread.id, workspace, userId: message.author.id }));
+  await thread.members.add(message.author.id);
+  await thread.send(`Workspace: **${workspace}**. This topic has an independent Codex context. Send a task directly; no mention needed.`);
+  return topic;
+}
+
+async function manage(message: Message, prompt: string): Promise<boolean> {
+  if (message.channel.type !== ChannelType.GuildText) return false;
+  const text = await assistant.respond(`${message.channelId}:${message.author.id}`, prompt, {
+    workspaces: () => Object.keys(workspaces),
+    topics: () => state.topics(message.channelId, message.author.id),
+    create: async (workspace, name) => {
+      return createTopic(message, workspace, name);
+    },
+    open: async (topic) => {
+      resolveWorkspace(state, topic.id, true, workspaces);
+      const thread = await client.channels.fetch(topic.id, { force: true });
+      if (!thread?.isThread() || thread.parentId !== message.channelId || thread.guildId !== message.guildId) throw new UserVisibleError("话题不可用或已移动，请在当前频道创建新话题。");
+      if (thread.locked) throw new UserVisibleError("话题已锁定，请让服务器管理员解锁后再打开。");
+      if (thread.archived) await thread.setArchived(false);
+      await thread.members.add(message.author.id);
+      console.log(JSON.stringify({ event: "workspace.topic.opened", topicId: topic.id, workspace: topic.workspace, userId: message.author.id }));
+    },
+  });
+  await sendLong(message, text ?? `这里是工作区管理入口，请进入话题执行工程任务。\n${managementHelp}`);
+  return true;
+}
+
 async function command(message: Message, prompt: string): Promise<boolean> {
   if (!/^!codex(?:\s|$)/.test(prompt)) return false;
   const subcommand = prompt.slice("!codex".length).trim().toLowerCase();
@@ -91,20 +137,8 @@ async function command(message: Message, prompt: string): Promise<boolean> {
     } else if (message.channel.type !== ChannelType.GuildText) {
       await message.reply("Create topics from a server text channel. DMs remain a separate Codex conversation.");
     } else {
-      const permissions = message.channel.permissionsFor(client.user!);
-      if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
-        PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.CreatePrivateThreads,
-        PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads])) {
-        await message.reply("Bot needs View Channel, Send Messages, Read Message History, Create Private Threads, Send Messages in Threads and Manage Threads.");
-        return true;
-      }
-      const thread = await message.channel.threads.create({ name: topic.name, type: ChannelType.PrivateThread,
-        invitable: false, autoArchiveDuration: 1440, reason: "discordgpt isolated workspace" });
-      // Persist before granting access: a message can never race an unbound thread.
-      await state.bindWorkspace(thread.id, topic.workspace, workspaces[topic.workspace]);
-      await thread.members.add(message.author.id);
-      await thread.send(`Workspace: **${topic.workspace}**. This topic has an independent Codex context. Send a task directly; no mention needed.`);
-      await message.reply(`Created topic <#${thread.id}> · workspace: ${topic.workspace}`);
+      const created = await createTopic(message, topic.workspace, topic.name);
+      if (created) await message.reply(`Created topic <#${created.id}> · workspace: ${topic.workspace}`);
     }
   } else if (subcommand === "reset") {
     if (active.has(message.channelId) || queues.size(queueKey(message.channelId))) await message.reply("Wait for queued work to finish before resetting.");
@@ -185,11 +219,16 @@ client.on("messageCreate", async (message) => {
     const prompt = cleanPrompt(message);
     const key = queueKey(message.channelId);
     await dispatchMessage(queues, key,
-      async () => !parseHistoryRequest(prompt) && await controls.enqueue(message.channelId, () => command(message, prompt)),
+      async () => controls.enqueue(message.channelId, async () => {
+        if (message.channel.type === ChannelType.GuildText && parseHistoryRequest(prompt)) return manage(message, "帮助");
+        if (!parseHistoryRequest(prompt) && await command(message, prompt)) return true;
+        return manage(message, prompt);
+      }),
       () => handle(message));
   } catch (error) {
     console.error(error);
-    await sendLong(message, "Codex bridge failed. Check the host log and retry; the saved thread was retained.").catch(() => undefined);
+    await sendLong(message, error instanceof UserVisibleError ? error.message
+      : "Codex bridge failed. Check the host log and retry; the saved thread was retained.").catch(() => undefined);
   }
 });
 
