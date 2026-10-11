@@ -1,6 +1,8 @@
-# codex-discord-multibot
+# discordgpt
 
-把一个本地 Codex 项目连接到一个专用 Discord bot。每个 Discord 频道或私信频道对应一个持久 Codex thread；多个项目通过运行多个独立实例实现隔离。
+通过 Discord 控制持久化的 OpenAI Codex 会话。每个 Discord 频道或私信频道对应一个独立 Codex thread，同频道任务串行执行，并可从终端连接同一个本地 app-server。
+
+本项目已从 `wbot` 独立：不包含交易、行情、数据库或正式推送频道逻辑。迁移范围和后续工作见 [MIGRATION.md](MIGRATION.md)，开源方案比较与来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
 这是 `claude-code-discord-multibot` 思路的 Codex 原生实现。它不依赖 Claude Discord plugin，而是直接使用：
 
@@ -50,7 +52,7 @@ Discord 是一个远程代码执行入口，务必保持最小权限：
 要求 Node.js 20+、Codex CLI，并且已经完成 `codex login`。
 
 ```bash
-cd ~/codex_home_sandbox/codex-discord-multibot
+cd discordgpt
 npm install
 cp .env.example .env
 chmod 600 .env
@@ -77,7 +79,7 @@ npm start
 仓库提供 [codex-dc.bash](codex-dc.bash)，但不会自动修改 `.bashrc`。在测试阶段可以只对当前 shell 临时加载：
 
 ```bash
-source ~/codex_home_sandbox/codex-discord-multibot/codex-dc.bash
+source "$PWD/codex-dc.bash"
 ```
 
 在目标项目目录初始化并启动：
