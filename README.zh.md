@@ -4,7 +4,7 @@
 
 本项目已从 `wbot` 独立：不包含交易、行情、数据库或正式推送频道逻辑。迁移范围和后续工作见 [MIGRATION.md](MIGRATION.md)，开源方案比较与来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
-当前版本 **v0.1.1**。独立进程已通过真实 Codex app-server 启动与握手验收；Discord 收发和 turn 协议由本地模拟服务器测试，尚未切换 wbot 的真实机器人。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **v0.2.0**。独立进程已通过真实 Codex app-server 启动与握手验收；Discord 收发和 turn 协议由本地模拟服务器测试，尚未切换 wbot 的真实机器人。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 默认只在任务完成后统一回复。`DISCORD_PROGRESS_ENABLED=true` 可打开工具执行前的进度消息。停止和状态指令立即执行，不会排在长任务后面；同频道任务串行，不同频道可并行，显式绑定同一 shared thread 的频道共用队列。
 
@@ -18,6 +18,7 @@
 ## 当前功能
 
 - 私信和服务器频道消息
+- Discord 原生私人话题绑定独立工作区和 Codex 上下文，私聊保持原有独立会话
 - 服务器内默认必须 `@bot`
 - Discord 用户和频道 allowlist
 - 每个 Discord channel 独立持久 thread
@@ -28,6 +29,33 @@
 - 附件 URL 会加入任务上下文
 - 超过 Discord 消息长度的回复自动分段
 - Discord 在线绿点与 HPC presence：显示计算节点、Slurm 剩余时间和项目名，每 15 分钟刷新
+
+## 工作区话题
+
+在主机上配置工作区代号，路径必须是已存在的绝对目录。例如将下面的 JSON 保存到仓库外的 `~/.config/discordgpt/workspaces.json`，权限设为 `0600`：
+
+```json
+{
+  "wbot": "/absolute/path/to/wbot",
+  "discordgpt": "/absolute/path/to/discordgpt"
+}
+```
+
+配置 `CODEX_WORKSPACES_FILE` 指向该文件。`default` 始终对应 `CODEX_PROJECT_DIR`，新增工作区配置后重启服务。聊天端不能指定任意目录。
+
+在允许的服务器文字频道中发送：
+
+```text
+@机器人 !codex workspaces
+@机器人 !codex topic wbot 交易开发
+@机器人 !codex topic discordgpt 聊天开发
+```
+
+机器人创建私人话题并添加发起人；进入话题直接聊天，无需再次 @。切换 Discord 话题就是切换工作区和上下文。同一个工作区可创建多个话题，各自拥有独立 Codex thread。话题改名不改变目录，`reset` 只清空当前话题的 Codex 绑定，保留工作区。重启后绑定仍保留；已移除或迁移的目录配置会阻止旧话题执行，不会静默转到其他目录。
+
+机器人在父频道需要 View Channel、Send Messages、Read Message History、Create Private Threads、Send Messages in Threads、Manage Threads；不需要 Administrator。私人话题仍可被具有 Manage Threads 权限的服务器成员查看，不等同于端到端隐私。若设置频道白名单，已绑定话题继承父频道的允许状态，私聊频道 ID 需另行加入白名单（或不设置频道白名单）。
+
+私聊保持原有默认工作目录和独立上下文，不会与服务器话题共享。`CODEX_SHARED_THREAD_ID` 仅作用于原有未绑定频道，工作区话题始终独立。手工创建且未绑定的 Discord 话题不会执行任务，请使用创建指令。上下文隔离不是文件系统隔离：同工作区话题仍能访问相同工程文件，多个修改任务应使用独立 worktree。
 
 ## 安全模型
 

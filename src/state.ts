@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-type StateData = { threads: Record<string, string> };
+export type WorkspaceBinding = { workspace: string; cwd: string };
+type StateData = {
+  threads: Record<string, string>;
+  workspaces?: Record<string, WorkspaceBinding>;
+};
 
 export class StateStore {
   private data: StateData = { threads: {} };
@@ -24,6 +28,19 @@ export class StateStore {
 
   get(channelId: string): string | undefined {
     return this.data.threads[channelId];
+  }
+
+  binding(channelId: string): WorkspaceBinding | undefined {
+    const value = this.data.workspaces?.[channelId];
+    return value ? { ...value } : undefined;
+  }
+
+  async bindWorkspace(channelId: string, workspace: string, cwd: string): Promise<void> {
+    const existing = this.binding(channelId);
+    if (existing && (existing.workspace !== workspace || existing.cwd !== cwd)) throw new Error("Workspace binding is immutable; create a new Discord topic");
+    this.data.workspaces ??= {};
+    this.data.workspaces[channelId] = { workspace, cwd };
+    await this.save();
   }
 
   async set(channelId: string, threadId: string): Promise<void> {

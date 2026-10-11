@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import {
-  Client, GatewayIntentBits, Message, Partials,
+  Client, GatewayIntentBits, Message, Partials, ChannelType, PermissionFlagsBits,
 } from "discord.js";
 import { config } from "./config.js";
 import { StateStore } from "./state.js";
@@ -11,6 +11,8 @@ import { ProgressRelay } from "./progress-relay.js";
 import { ChannelQueue } from "./channel-queue.js";
 import { splitReply } from "./format.js";
 import { dispatchMessage } from "./dispatch.js";
+import { loadWorkspaces } from "./workspaces.js";
+import { resolveWorkspace, topicRequest } from "./topic-routing.js";
 import { initialPresence, presenceContext, startPresenceUpdates } from "./presence.js";
 
 const state = new StateStore(config.stateDir);
@@ -34,15 +36,19 @@ const client = new Client({
 });
 
 const queues = new ChannelQueue();
+const controls = new ChannelQueue();
+let workspaces: Record<string, string> = { default: config.projectDir };
 const active = new Map<string, { threadId: string; turnId: string }>();
 function queueKey(channelId: string): string {
-  return config.sharedThreadId ? `thread:${config.sharedThreadId}` : channelId;
+  return config.sharedThreadId && !state.binding(channelId) ? `thread:${config.sharedThreadId}` : channelId;
 }
 
 function allowed(message: Message): boolean {
   if (!config.allowedUsers.has(message.author.id)) return false;
-  if (config.allowedChannels.size && !config.allowedChannels.has(message.channelId)) return false;
-  if (message.guild && config.requireMention && !message.mentions.has(client.user!)) return false;
+  const boundTopic = message.channel.isThread() && !!state.binding(message.channelId);
+  const parentAllowed = boundTopic && message.channel.isThread() && !!message.channel.parentId && config.allowedChannels.has(message.channel.parentId);
+  if (config.allowedChannels.size && !config.allowedChannels.has(message.channelId) && !parentAllowed) return false;
+  if (message.guild && config.requireMention && !boundTopic && !message.mentions.has(client.user!)) return false;
   return true;
 }
 
@@ -58,16 +64,17 @@ async function sendLong(message: Message, text: string): Promise<void> {
 }
 
 async function getThread(channelId: string): Promise<string> {
-  if (config.sharedThreadId) {
+  const cwd = resolveWorkspace(state, channelId, !!state.binding(channelId), workspaces).cwd;
+  if (config.sharedThreadId && !state.binding(channelId)) {
     await codex.resumeThread(config.sharedThreadId);
     return config.sharedThreadId;
   }
   const existing = state.get(channelId);
   if (existing) {
-    try { await codex.resumeThread(existing); return existing; }
+    try { await codex.resumeThread(existing, cwd); return existing; }
     catch (error) { throw new Error(`Could not resume the saved thread ${existing}; retry or use !codex reset explicitly`, { cause: error }); }
   }
-  const threadId = await codex.startThread();
+  const threadId = await codex.startThread(cwd);
   await state.set(channelId, threadId);
   return threadId;
 }
@@ -75,26 +82,53 @@ async function getThread(channelId: string): Promise<string> {
 async function command(message: Message, prompt: string): Promise<boolean> {
   if (!/^!codex(?:\s|$)/.test(prompt)) return false;
   const subcommand = prompt.slice("!codex".length).trim().toLowerCase();
-  if (subcommand === "reset") {
+  const topic = topicRequest(prompt);
+  if (subcommand === "workspaces") {
+    await sendLong(message, Object.keys(workspaces).map((alias) => `• ${alias}`).join("\n"));
+  } else if (topic) {
+    if (!Object.hasOwn(workspaces, topic.workspace) || topic.name.length > 100) {
+      await message.reply("Unknown workspace or topic name exceeds 100 characters. Use !codex workspaces.");
+    } else if (message.channel.type !== ChannelType.GuildText) {
+      await message.reply("Create topics from a server text channel. DMs remain a separate Codex conversation.");
+    } else {
+      const permissions = message.channel.permissionsFor(client.user!);
+      if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.CreatePrivateThreads,
+        PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads])) {
+        await message.reply("Bot needs View Channel, Send Messages, Read Message History, Create Private Threads, Send Messages in Threads and Manage Threads.");
+        return true;
+      }
+      const thread = await message.channel.threads.create({ name: topic.name, type: ChannelType.PrivateThread,
+        invitable: false, autoArchiveDuration: 1440, reason: "discordgpt isolated workspace" });
+      // Persist before granting access: a message can never race an unbound thread.
+      await state.bindWorkspace(thread.id, topic.workspace, workspaces[topic.workspace]);
+      await thread.members.add(message.author.id);
+      await thread.send(`Workspace: **${topic.workspace}**. This topic has an independent Codex context. Send a task directly; no mention needed.`);
+      await message.reply(`Created topic <#${thread.id}> · workspace: ${topic.workspace}`);
+    }
+  } else if (subcommand === "reset") {
     if (active.has(message.channelId) || queues.size(queueKey(message.channelId))) await message.reply("Wait for queued work to finish before resetting.");
-    else if (config.sharedThreadId) await message.reply("Reset is disabled for a configured shared thread.");
+    else if (config.sharedThreadId && !state.binding(message.channelId)) await message.reply("Reset is disabled for a configured shared thread.");
     else { await state.reset(message.channelId); await message.reply("Codex thread reset. The next message starts a fresh thread."); }
   } else if (subcommand === "stop") {
     const current = active.get(message.channelId);
     if (!current) await message.reply("No active Codex turn.");
     else { await codex.interrupt(current.threadId, current.turnId); await message.reply("Stop requested."); }
   } else if (subcommand === "status") {
-    const threadId = config.sharedThreadId ?? state.get(message.channelId) ?? "not started";
-    await message.reply(active.has(message.channelId)
+    const workspace = resolveWorkspace(state, message.channelId, message.channel.isThread(), workspaces);
+    const threadId = (state.binding(message.channelId) ? undefined : config.sharedThreadId) ?? state.get(message.channelId) ?? "not started";
+    const status = active.has(message.channelId)
       ? `Codex is working. Thread: \`${active.get(message.channelId)!.threadId}\`. Outstanding tasks: ${queues.size(queueKey(message.channelId))}`
-      : `Codex is idle. Thread: \`${threadId}\`. Outstanding tasks: ${queues.size(queueKey(message.channelId))}`);
+      : `Codex is idle. Thread: \`${threadId}\`. Outstanding tasks: ${queues.size(queueKey(message.channelId))}`;
+    await sendLong(message, `Workspace: ${workspace.workspace}\nPath: ${workspace.cwd}\n${status}`);
   } else {
-    await message.reply("Commands: `!codex status`, `!codex stop`, `!codex reset`, `!codex history [1-100] [task]`. Otherwise, send a normal task.");
+    await message.reply("Commands: `!codex workspaces`, `!codex topic <workspace> [name]`, `!codex status`, `!codex stop`, `!codex reset`, `!codex history [1-100] [task]`. Otherwise, send a normal task.");
   }
   return true;
 }
 
 async function handle(message: Message): Promise<void> {
+  const workspace = resolveWorkspace(state, message.channelId, message.channel.isThread(), workspaces);
   let prompt = cleanPrompt(message);
   if (!prompt && message.attachments.size === 0) return;
   const historyRequest = parseHistoryRequest(prompt);
@@ -129,7 +163,7 @@ async function handle(message: Message): Promise<void> {
       if (!config.progressEnabled) return;
       if (progress.type === "tool_boundary") void relay.flushBeforeTool();
       else relay.push(progress.delta, progress.outputKind);
-    });
+    }, workspace.cwd);
     const result = await turnPromise;
     await relay.finish();
     if (result.finalText) {
@@ -151,7 +185,7 @@ client.on("messageCreate", async (message) => {
     const prompt = cleanPrompt(message);
     const key = queueKey(message.channelId);
     await dispatchMessage(queues, key,
-      async () => !parseHistoryRequest(prompt) && await command(message, prompt),
+      async () => !parseHistoryRequest(prompt) && await controls.enqueue(message.channelId, () => command(message, prompt)),
       () => handle(message));
   } catch (error) {
     console.error(error);
@@ -172,6 +206,7 @@ codex.on("exit", () => {
 
 try {
   if (!(await fs.stat(config.projectDir)).isDirectory()) throw new Error("CODEX_PROJECT_DIR is not a directory");
+  workspaces = await loadWorkspaces(config.projectDir, config.workspacesFile);
   await state.load();
   await codex.start();
   await client.login(config.token);

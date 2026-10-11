@@ -62,9 +62,9 @@ export class CodexAppServer extends EventEmitter {
     this.notify("initialized", {});
   }
 
-  async startThread(): Promise<string> {
+  async startThread(cwd = this.cwd): Promise<string> {
     const result = await this.request("thread/start", {
-      cwd: this.cwd,
+      cwd,
       model: this.defaults.model ?? null,
       sandbox: this.defaults.sandbox,
       approvalPolicy: this.defaults.approvalPolicy,
@@ -73,10 +73,10 @@ export class CodexAppServer extends EventEmitter {
     return result.thread.id as string;
   }
 
-  async resumeThread(threadId: string): Promise<void> {
+  async resumeThread(threadId: string, cwd = this.cwd): Promise<void> {
     await this.request("thread/resume", {
       threadId,
-      cwd: this.cwd,
+      cwd,
       model: this.defaults.model ?? null,
       sandbox: this.defaults.sandbox,
       approvalPolicy: this.defaults.approvalPolicy,
@@ -88,6 +88,7 @@ export class CodexAppServer extends EventEmitter {
     prompt: string | TurnInput[],
     onStarted?: (turnId: string) => void,
     onProgress?: (progress: TurnProgress) => void,
+    cwd = this.cwd,
   ): Promise<TurnResult> {
     const input: TurnInput[] = typeof prompt === "string"
       ? [{ type: "text", text: prompt, text_elements: [] }]
@@ -95,7 +96,7 @@ export class CodexAppServer extends EventEmitter {
     const response = await this.request("turn/start", {
       threadId,
       input,
-      cwd: this.cwd,
+      cwd,
       approvalPolicy: this.defaults.approvalPolicy,
       model: this.defaults.model ?? null,
     });

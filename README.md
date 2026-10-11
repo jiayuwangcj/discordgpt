@@ -10,7 +10,7 @@ trading, market-data, database, or notification-channel logic. It uses
 
 See [README.zh.md](README.zh.md) for setup, security guidance, commands, multi-instance usage, and current limitations.
 
-Release: **v0.1.1**. Node.js 20+ and an authenticated Codex CLI are required.
+Release: **v0.2.0**. Node.js 20+ and an authenticated Codex CLI are required.
 
 Quick start:
 
@@ -25,6 +25,16 @@ npm start
 
 Defaults are intentionally conservative: `workspace-write`, no approval escalation, explicit Discord user allowlist, and mention-only behavior in guild channels.
 
+Configure `CODEX_WORKSPACES_FILE` as a host-side JSON object of aliases to absolute
+existing directories. In a server text channel, send
+`@bot !codex topic <workspace-alias> [topic-name]`. The bot creates a private
+Discord thread, binds its workspace, and adds the requester. Talk directly in
+that thread without mentions. Every topic has independent Codex context, even
+when two topics use the same directory. DMs keep their original separate context.
+Use `!codex workspaces` to list configured aliases; directory changes require a
+new topic rather than silently rebinding an existing conversation. Setup and
+required permissions are documented in [README.zh.md](README.zh.md#工作区话题).
+
 See [MIGRATION.md](MIGRATION.md) for the remaining features being extracted
 from wbot and [UPSTREAM.md](UPSTREAM.md) for the open-source evaluation and
 attribution behind this implementation.
@@ -38,7 +48,7 @@ even while a model task is running. Replies are delivered on completion;
 `DISCORD_PROGRESS_ENABLED=true` enables commentary before tool calls.
 
 ```bash
-npm run verify  # type check, 13 tests, dependency audit
+npm run verify  # type check, automated tests, dependency audit
 npm run smoke   # actual installed app-server startup + state persistence
 ```
 

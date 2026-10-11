@@ -33,6 +33,7 @@ export const config = {
   token: process.env.DISCORD_BOT_TOKEN,
   discordApiBaseUrl: process.env.DISCORD_API_BASE_URL || "https://discord.com/api",
   projectDir,
+  workspacesFile: process.env.CODEX_WORKSPACES_FILE || undefined,
   allowedUsers: csv(process.env.DISCORD_ALLOWED_USER_IDS),
   allowedChannels: csv(process.env.DISCORD_ALLOWED_CHANNEL_IDS),
   requireMention: bool(process.env.DISCORD_REQUIRE_MENTION, true),

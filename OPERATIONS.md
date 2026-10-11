@@ -23,12 +23,13 @@ Optional settings:
 | `DISCORD_PROGRESS_ENABLED` | `false`; send final answer once the task ends |
 | `CODEX_BIN` | `codex`; use an absolute path under a service manager |
 | `CODEX_MODEL` | Codex's configured default |
+| `CODEX_WORKSPACES_FILE` | Optional host-side JSON object of aliases to existing absolute directories; `default` remains `CODEX_PROJECT_DIR` |
 | `CODEX_SANDBOX` | `workspace-write` |
 | `CODEX_APPROVAL_POLICY` | `never` |
 | `CODEX_DISCORD_STATE_DIR` | `.state` relative to service working directory |
 | `CODEX_APP_SERVER_URL` | Empty spawns owned stdio app-server; loopback `ws://` or authenticated `wss://` connects to an external server |
 | `CODEX_APP_SERVER_TOKEN` | Bearer token for authenticated remote server |
-| `CODEX_SHARED_THREAD_ID` | Optional explicit shared thread; all channels using it share one queue |
+| `CODEX_SHARED_THREAD_ID` | Optional explicit shared thread for unbound channels; workspace topics always use separate threads |
 | `CODEX_DISCORD_ENV_FILE` | Explicit config file; otherwise `.env` in current working directory |
 | `DISCORD_API_BASE_URL` | Default Discord API; local test harness overrides this for simulated Gateway/REST acceptance |
 
@@ -68,6 +69,25 @@ there is no requirement to source credentials as shell code.
 
 ## Recovery
 
+Workspace topics use Discord private threads, created from a guild text channel
+with `!codex topic <alias> [name]`. Grant Create Private Threads, Send Messages in
+Threads and Manage Threads in addition to the base permissions. The authorized
+requester is added automatically; moderators with Manage Threads can also view
+private threads. Bound topics inherit the parent channel allowlist, but still
+check the user allowlist. A DM must be included separately if using a channel
+allowlist. Private topic messages do not require a mention.
+
+Keep `state.json`: it contains immutable topic/workspace path bindings as well as
+Codex thread IDs. Renaming a topic never changes cwd. If workspace configuration
+is removed or moved, execution fails closed. Restore the old configuration or
+create a new topic. Reset clears only the Codex context, not its workspace.
+Existing DM state needs no migration. Context isolation does not isolate files:
+use separate worktrees for concurrent edits in the same repository.
+
+If creating a topic or adding its requester fails, inspect host logs and the
+server's private-thread list before retrying; an already-created thread may remain.
+This version does not automatically adopt manually-created threads.
+
 Each channel maps to a thread in `state.json`; keep the state directory when
 upgrading. Resume errors retain that binding. Use `!codex reset` only when
 intentionally starting a new conversation. Reset is blocked during queued
@@ -101,5 +121,10 @@ Before moving an existing bot token from wbot:
 6. Restart the service and confirm the next DM resumes the saved thread.
 7. Where shared app-server mode is used, attach the terminal to the reported
    thread and check continuity before retiring wbot's assistant entry point.
+8. Configure two workspace aliases and create private topics from the authorized
+   parent channel. Confirm each topic reports its own directory and Codex thread,
+   answers without mentions, and retains its binding after a service restart.
+9. Confirm a DM still resumes its original context and does not know the topic
+   conversation. Creating two topics for one workspace must also yield two threads.
 
-The standalone v0.1.1 release has not yet replaced the live wbot bridge.
+The standalone bridge has not yet replaced the live wbot bridge.
