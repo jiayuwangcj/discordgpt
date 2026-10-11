@@ -6,6 +6,7 @@ type StateData = { threads: Record<string, string> };
 export class StateStore {
   private data: StateData = { threads: {} };
   private readonly file: string;
+  private saveTail: Promise<void> = Promise.resolve();
 
   constructor(dir: string) {
     this.file = path.join(dir, "state.json");
@@ -35,9 +36,16 @@ export class StateStore {
     await this.save();
   }
 
-  private async save(): Promise<void> {
+  private save(): Promise<void> {
+    const snapshot = `${JSON.stringify(this.data, null, 2)}\n`;
+    const run = this.saveTail.then(() => this.writeSnapshot(snapshot));
+    this.saveTail = run.catch(() => undefined);
+    return run;
+  }
+
+  private async writeSnapshot(snapshot: string): Promise<void> {
     const temp = `${this.file}.tmp`;
-    await fs.writeFile(temp, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
+    await fs.writeFile(temp, snapshot, { mode: 0o600 });
     await fs.rename(temp, this.file);
     await fs.chmod(this.file, 0o600);
   }

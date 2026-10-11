@@ -6,6 +6,62 @@ import test from "node:test";
 import { WebSocketServer } from "ws";
 import { CodexAppServer } from "../dist/codex-app-server.js";
 import { StateStore } from "../dist/state.js";
+import { ChannelQueue } from "../dist/channel-queue.js";
+import { splitReply } from "../dist/format.js";
+import { dispatchMessage } from "../dist/dispatch.js";
+
+test("STOP dispatch bypasses a running channel task", async () => {
+  const queue = new ChannelQueue();
+  let release;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const active = dispatchMessage(queue, "channel", async () => false, () => waiting);
+  await new Promise((resolve) => setImmediate(resolve));
+  let stopped = false;
+  await dispatchMessage(queue, "channel", async () => { stopped = true; release(); return true; },
+    async () => { assert.fail("Control must not become a model task"); });
+  assert.equal(stopped, true);
+  await active;
+});
+
+test("channels serialize locally while other channels run and recover after failure", async () => {
+  const queue = new ChannelQueue();
+  const events = [];
+  let release;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const first = queue.enqueue("a", async () => { events.push("a1"); await waiting; throw new Error("failed"); });
+  const failure = assert.rejects(first, /failed/);
+  const second = queue.enqueue("a", async () => { events.push("a2"); });
+  await queue.enqueue("b", async () => { events.push("b1"); });
+  assert.deepEqual(events, ["a1", "b1"]);
+  release();
+  await failure;
+  await second;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["a1", "b1", "a2"]);
+  assert.equal(queue.size("a"), 0);
+});
+
+test("long replies preserve paragraphs, links and Unicode characters", () => {
+  const url = "https://tradedev.w-cloud.top:1443/reports/ppo/a-long-report/";
+  const text = `${"前".repeat(1800)}\n\n报告 [查看](${url})\n\n${"😀".repeat(1100)}`;
+  const chunks = splitReply(text);
+  assert.ok(chunks.every((part) => part.length <= 1900));
+  assert.ok(chunks.some((part) => part.includes(`[查看](${url})`)));
+  assert.ok(chunks.every((part) => !/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(part)));
+  assert.equal(chunks.join("").replace(/\s/g, ""), text.replace(/\s/g, ""));
+});
+
+test("concurrent channel state writes persist every mapping", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "discordgpt-state-test-"));
+  try {
+    const state = new StateStore(dir);
+    await state.load();
+    await Promise.all(Array.from({ length: 20 }, (_, i) => state.set(`channel-${i}`, `thread-${i}`)));
+    const loaded = new StateStore(dir);
+    await loaded.load();
+    for (let i = 0; i < 20; i++) assert.equal(loaded.get(`channel-${i}`), `thread-${i}`);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
 import { parseHistoryRequest } from "../dist/history.js";
 import { ProgressRelay } from "../dist/progress-relay.js";
 import { prepareTurnInput } from "../dist/attachments.js";

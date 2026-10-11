@@ -17,13 +17,26 @@ function bool(value: string | undefined, fallback: boolean): boolean {
 const projectDir = path.resolve(process.env.CODEX_PROJECT_DIR ?? "");
 if (!process.env.DISCORD_BOT_TOKEN) throw new Error("DISCORD_BOT_TOKEN is required");
 if (!process.env.CODEX_PROJECT_DIR) throw new Error("CODEX_PROJECT_DIR is required");
+if (!csv(process.env.DISCORD_ALLOWED_USER_IDS).size) throw new Error("DISCORD_ALLOWED_USER_IDS must include at least one user");
+if (process.env.CODEX_APP_SERVER_URL) {
+  const endpoint = new URL(process.env.CODEX_APP_SERVER_URL);
+  if (!((endpoint.protocol === "ws:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))
+      || (endpoint.protocol === "wss:" && process.env.CODEX_APP_SERVER_TOKEN))) {
+    throw new Error("CODEX_APP_SERVER_URL requires loopback ws:// or authenticated wss://");
+  }
+}
+if (!["read-only", "workspace-write", "danger-full-access"].includes(process.env.CODEX_SANDBOX || "workspace-write")) {
+  throw new Error("Unsupported CODEX_SANDBOX");
+}
 
 export const config = {
   token: process.env.DISCORD_BOT_TOKEN,
+  discordApiBaseUrl: process.env.DISCORD_API_BASE_URL || "https://discord.com/api",
   projectDir,
   allowedUsers: csv(process.env.DISCORD_ALLOWED_USER_IDS),
   allowedChannels: csv(process.env.DISCORD_ALLOWED_CHANNEL_IDS),
   requireMention: bool(process.env.DISCORD_REQUIRE_MENTION, true),
+  progressEnabled: bool(process.env.DISCORD_PROGRESS_ENABLED, false),
   codexBin: process.env.CODEX_BIN || "codex",
   appServerUrl: process.env.CODEX_APP_SERVER_URL || undefined,
   appServerToken: process.env.CODEX_APP_SERVER_TOKEN || undefined,

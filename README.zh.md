@@ -4,6 +4,10 @@
 
 本项目已从 `wbot` 独立：不包含交易、行情、数据库或正式推送频道逻辑。迁移范围和后续工作见 [MIGRATION.md](MIGRATION.md)，开源方案比较与来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
+当前版本 **v0.1.1**。独立进程已通过真实 Codex app-server 启动与握手验收；Discord 收发和 turn 协议由本地模拟服务器测试，尚未切换 wbot 的真实机器人。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+默认只在任务完成后统一回复。`DISCORD_PROGRESS_ENABLED=true` 可打开工具执行前的进度消息。停止和状态指令立即执行，不会排在长任务后面；同频道任务串行，不同频道可并行，显式绑定同一 shared thread 的频道共用队列。
+
 这是 `claude-code-discord-multibot` 思路的 Codex 原生实现。它不依赖 Claude Discord plugin，而是直接使用：
 
 - Discord Gateway（`discord.js`）接收和发送消息
@@ -53,7 +57,7 @@ Discord 是一个远程代码执行入口，务必保持最小权限：
 
 ```bash
 cd discordgpt
-npm install
+npm ci
 cp .env.example .env
 chmod 600 .env
 ```
@@ -230,9 +234,12 @@ WebSocket 默认只允许 `ws://127.0.0.1:*` 或 `ws://localhost:*`。不要把�
 
 - MVP 暂不在 Discord 中提供交互式审批；越权请求一律拒绝。
 - `stop` 只能中断正在执行的 turn，已排队消息仍会继续执行。
-- 附件目前作为 Discord CDN URL 传给 Codex，不会自动下载成本地文件。
+- PNG/JPEG/WebP 会下载为本地多模态输入，其他附件使用 URL；下载有体积上限，turn 完成后清理。
 - app-server 接口由已安装 Codex CLI 提供；升级 Codex 后应重新运行测试。
 - TUI 需要先知道 Discord channel 对应的 thread ID；目前通过 `!codex status` 后运行 attach 脚本完成，尚未自动切换。
+- 任务队列仅保存在内存；进程重启后需重发未完成任务。会话绑定保持持久化。
+- writer 冲突或 resume 失败不会自动新建会话；排查后重试，或显式 reset。
+- 动态模型/强度切换、账号用量、JSONL 审计记录尚待从 wbot 迁入。
 
 ## 实验性微信 ClawBot 桥接
 

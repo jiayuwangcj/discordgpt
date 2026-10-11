@@ -1,12 +1,15 @@
 {
   "name": "discordgpt",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "license": "MIT",
   "type": "module",
   "description": "Control persistent OpenAI Codex sessions from Discord.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
+    "verify": "npm run check && npm test && npm audit --audit-level=high",
+    "smoke": "npm run build && node dist/smoke.js",
     "start": "node --enable-source-maps dist/index.js",
     "dev": "tsx src/index.ts"
   },

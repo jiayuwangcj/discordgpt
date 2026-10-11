@@ -8,6 +8,9 @@ import { CodexAppServer } from "./codex-app-server.js";
 import { formatHistory, parseHistoryRequest } from "./history.js";
 import { prepareTurnInput } from "./attachments.js";
 import { ProgressRelay } from "./progress-relay.js";
+import { ChannelQueue } from "./channel-queue.js";
+import { splitReply } from "./format.js";
+import { dispatchMessage } from "./dispatch.js";
 import { initialPresence, presenceContext, startPresenceUpdates } from "./presence.js";
 
 const state = new StateStore(config.stateDir);
@@ -18,6 +21,7 @@ const codex = new CodexAppServer(config.codexBin, config.projectDir, {
 }, config.appServerUrl ? { url: config.appServerUrl, token: config.appServerToken } : undefined);
 const presence = presenceContext(config.projectDir);
 const client = new Client({
+  rest: { api: config.discordApiBaseUrl },
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
@@ -25,11 +29,15 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel, Partials.Message],
+  allowedMentions: { parse: [], repliedUser: false },
   presence: initialPresence(presence),
 });
 
-const queues = new Map<string, Promise<void>>();
+const queues = new ChannelQueue();
 const active = new Map<string, { threadId: string; turnId: string }>();
+function queueKey(channelId: string): string {
+  return config.sharedThreadId ? `thread:${config.sharedThreadId}` : channelId;
+}
 
 function allowed(message: Message): boolean {
   if (!config.allowedUsers.has(message.author.id)) return false;
@@ -46,8 +54,7 @@ function cleanPrompt(message: Message): string {
 
 async function sendLong(message: Message, text: string): Promise<void> {
   const body = text.trim() || "Codex completed without a text response.";
-  const chunks = body.match(/[\s\S]{1,1900}/g) ?? [body];
-  for (const chunk of chunks) await message.reply({ content: chunk, allowedMentions: { repliedUser: false } });
+  for (const chunk of splitReply(body)) await message.reply({ content: chunk, allowedMentions: { parse: [], repliedUser: false } });
 }
 
 async function getThread(channelId: string): Promise<string> {
@@ -58,7 +65,7 @@ async function getThread(channelId: string): Promise<string> {
   const existing = state.get(channelId);
   if (existing) {
     try { await codex.resumeThread(existing); return existing; }
-    catch (error) { console.warn(`Could not resume ${existing}; starting a new thread`, error); }
+    catch (error) { throw new Error(`Could not resume the saved thread ${existing}; retry or use !codex reset explicitly`, { cause: error }); }
   }
   const threadId = await codex.startThread();
   await state.set(channelId, threadId);
@@ -66,10 +73,11 @@ async function getThread(channelId: string): Promise<string> {
 }
 
 async function command(message: Message, prompt: string): Promise<boolean> {
-  if (!prompt.startsWith("!codex")) return false;
+  if (!/^!codex(?:\s|$)/.test(prompt)) return false;
   const subcommand = prompt.slice("!codex".length).trim().toLowerCase();
   if (subcommand === "reset") {
-    if (active.has(message.channelId)) await message.reply("Stop the active turn before resetting.");
+    if (active.has(message.channelId) || queues.size(queueKey(message.channelId))) await message.reply("Wait for queued work to finish before resetting.");
+    else if (config.sharedThreadId) await message.reply("Reset is disabled for a configured shared thread.");
     else { await state.reset(message.channelId); await message.reply("Codex thread reset. The next message starts a fresh thread."); }
   } else if (subcommand === "stop") {
     const current = active.get(message.channelId);
@@ -78,8 +86,8 @@ async function command(message: Message, prompt: string): Promise<boolean> {
   } else if (subcommand === "status") {
     const threadId = config.sharedThreadId ?? state.get(message.channelId) ?? "not started";
     await message.reply(active.has(message.channelId)
-      ? `Codex is working. Thread: \`${active.get(message.channelId)!.threadId}\``
-      : `Codex is idle. Thread: \`${threadId}\``);
+      ? `Codex is working. Thread: \`${active.get(message.channelId)!.threadId}\`. Outstanding tasks: ${queues.size(queueKey(message.channelId))}`
+      : `Codex is idle. Thread: \`${threadId}\`. Outstanding tasks: ${queues.size(queueKey(message.channelId))}`);
   } else {
     await message.reply("Commands: `!codex status`, `!codex stop`, `!codex reset`, `!codex history [1-100] [task]`. Otherwise, send a normal task.");
   }
@@ -107,7 +115,7 @@ async function handle(message: Message): Promise<void> {
       "<discord_history>", history, "</discord_history>",
       "User's task:", historyRequest.task,
     ].join("\n");
-  } else if (await command(message, prompt)) return;
+  }
   if ("sendTyping" in message.channel) await message.channel.sendTyping();
   const threadId = await getThread(message.channelId);
   const prepared = await prepareTurnInput(prompt, message.attachments.values(), config.stateDir, message.id);
@@ -118,6 +126,7 @@ async function handle(message: Message): Promise<void> {
     const turnPromise = codex.runTurn(threadId, prepared.input, (turnId) => {
       active.set(message.channelId, { threadId, turnId });
     }, (progress) => {
+      if (!config.progressEnabled) return;
       if (progress.type === "tool_boundary") void relay.flushBeforeTool();
       else relay.push(progress.delta, progress.outputKind);
     });
@@ -135,25 +144,57 @@ async function handle(message: Message): Promise<void> {
   }
 }
 
-client.on("messageCreate", (message) => {
+client.on("messageCreate", async (message) => {
   if (message.author.bot || !allowed(message)) return;
-  const previous = queues.get(message.channelId) ?? Promise.resolve();
-  const next = previous.then(() => handle(message)).catch(async (error) => {
+  try {
+    // Controls must bypass the queue so STOP can interrupt a running turn.
+    const prompt = cleanPrompt(message);
+    const key = queueKey(message.channelId);
+    await dispatchMessage(queues, key,
+      async () => !parseHistoryRequest(prompt) && await command(message, prompt),
+      () => handle(message));
+  } catch (error) {
     console.error(error);
-    await message.reply(`Codex bridge error: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
-  }).finally(() => {
-    if (queues.get(message.channelId) === next) queues.delete(message.channelId);
-  });
-  queues.set(message.channelId, next);
+    await sendLong(message, "Codex bridge failed. Check the host log and retry; the saved thread was retained.").catch(() => undefined);
+  }
 });
 
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`Discord bot ready as ${client.user?.tag}; project=${config.projectDir}`);
   if (client.user) startPresenceUpdates(client.user, presence);
 });
 codex.on("log", (line) => { if (line) console.error(`[codex] ${line}`); });
+codex.on("exit", () => {
+  console.error("Codex transport disconnected; restart the bridge to resume saved threads.");
+  client.destroy();
+  process.exit(1);
+});
 
-await fs.access(config.projectDir);
-await state.load();
-await codex.start();
-await client.login(config.token);
+try {
+  if (!(await fs.stat(config.projectDir)).isDirectory()) throw new Error("CODEX_PROJECT_DIR is not a directory");
+  await state.load();
+  await codex.start();
+  await client.login(config.token);
+} catch (error) {
+  console.error("discordgpt startup failed; check the configuration and Codex transport.");
+  // Keep raw credentials and third-party error payloads out of Discord output.
+  console.error(error instanceof Error ? error.name : "StartupError");
+  client.destroy();
+  const deadline = setTimeout(() => process.exit(1), 5000);
+  deadline.unref();
+  await codex.close();
+  clearTimeout(deadline);
+  process.exit(1);
+}
+
+let shuttingDown = false;
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const timer = setTimeout(() => process.exit(1), 5000);
+    timer.unref();
+    client.destroy();
+    void codex.close().then(() => process.exit(0), () => process.exit(1));
+  });
+}

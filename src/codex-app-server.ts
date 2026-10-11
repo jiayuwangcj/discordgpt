@@ -156,6 +156,7 @@ export class CodexAppServer extends EventEmitter {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.proc.stderr.on("data", (chunk) => this.emit("log", chunk.toString().trimEnd()));
+    this.proc.on("error", (error) => { this.proc = undefined; this.disconnect(error); });
     this.proc.on("exit", (code, signal) => {
       this.proc = undefined;
       this.disconnect(new Error(`codex app-server exited (code=${code}, signal=${signal})`));
@@ -166,7 +167,7 @@ export class CodexAppServer extends EventEmitter {
 
   private async startWebSocket(): Promise<void> {
     const headers = this.remote?.token ? { Authorization: `Bearer ${this.remote.token}` } : undefined;
-    const socket = new WebSocket(this.remote!.url, { headers });
+    const socket = new WebSocket(this.remote!.url, { headers, handshakeTimeout: 20000 });
     this.socket = socket;
     socket.on("message", (data) => this.onLine(data.toString()));
     socket.on("close", (code, reason) => {
@@ -182,20 +183,32 @@ export class CodexAppServer extends EventEmitter {
 
   private disconnect(error: Error): void {
     this.emit("log", `${error.message}; closing=${this.closing} pending=${this.pending.size} turns=${this.turns.size}`);
-    if (!this.closing) {
-      for (const item of this.pending.values()) item.reject(error);
-      for (const item of this.turns.values()) item.reject(error);
-      this.emit("exit", error);
-    }
+    for (const item of this.pending.values()) item.reject(error);
+    for (const item of this.turns.values()) item.reject(error);
+    if (!this.closing) this.emit("exit", error);
     this.pending.clear();
     this.turns.clear();
+    this.earlyTurnEvents.clear();
   }
 
   private request(method: string, params: JsonObject): Promise<any> {
     const id = this.nextId++;
-    const response = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-    this.send({ id, method, params });
-    return response;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Codex RPC timed out: ${method}`));
+      }, 20000);
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+      try { this.send({ id, method, params }); }
+      catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
   }
 
   private notify(method: string, params: JsonObject): void {

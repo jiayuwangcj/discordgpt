@@ -37,10 +37,10 @@ dedicated discordgpt state directory.
    - Late-result delivery for turns longer than the Discord request wait.
    - Interrupt, steer, queue withdrawal, and queue status.
 3. **Discord product behavior**
-   - Paragraph/Markdown/link-safe 1,900-character chunking.
+   - Paragraph/link-safe 1,900-character chunking: implemented in v0.1.1; code-fence-aware continuation remains future work.
    - One disposable queue-status message, removed after completion.
    - Append-only JSONL audit journal with rotation and redaction.
-   - Completion-only final replies by default; progress is opt-in.
+   - Completion-only final replies by default; progress is opt-in: implemented in v0.1.1.
 4. **Operations**
    - `doctor`, config validation, health heartbeat, and supervised service files.
    - Restart/recovery integration tests against a fake app-server and Discord API.

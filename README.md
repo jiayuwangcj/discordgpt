@@ -10,12 +10,15 @@ trading, market-data, database, or notification-channel logic. It uses
 
 See [README.zh.md](README.zh.md) for setup, security guidance, commands, multi-instance usage, and current limitations.
 
+Release: **v0.1.1**. Node.js 20+ and an authenticated Codex CLI are required.
+
 Quick start:
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 # Fill DISCORD_BOT_TOKEN, CODEX_PROJECT_DIR, and DISCORD_ALLOWED_USER_IDS
+chmod 600 .env
 npm run build
 npm start
 ```
@@ -27,3 +30,22 @@ from wbot and [UPSTREAM.md](UPSTREAM.md) for the open-source evaluation and
 attribution behind this implementation.
 
 For a shared HPC/tmux view, set `CODEX_APP_SERVER_URL=ws://127.0.0.1:4500`, start with `scripts/start-shared-tmux.sh`, then attach the TUI to the Discord thread with `scripts/attach-thread.sh`. Both clients use the same Codex app-server and thread.
+
+Send plain messages in a DM, or mention the bot in an authorized guild
+channel. Use `!codex status`, `!codex stop`, `!codex reset`, and
+`!codex history 20 summarize decisions`. Status and stop execute immediately
+even while a model task is running. Replies are delivered on completion;
+`DISCORD_PROGRESS_ENABLED=true` enables commentary before tool calls.
+
+```bash
+npm run verify  # type check, 13 tests, dependency audit
+npm run smoke   # actual installed app-server startup + state persistence
+```
+
+`smoke` requires Codex on PATH but no Discord token and starts no model turn.
+Transport tests use a local mock server. A successful smoke test does not mean
+Discord Gateway delivery has been tested with a real bot.
+
+See [OPERATIONS.md](OPERATIONS.md) for independent service deployment,
+failure recovery, logs and the live DM acceptance steps, and
+[CHANGELOG.md](CHANGELOG.md) for release validation.
