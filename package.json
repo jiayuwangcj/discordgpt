@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
-    "verify": "npm run check && npm test && npm audit --audit-level=high",
+    "verify": "npm run check && node --check scripts/deploy-wbot-handoff.mjs && node --check scripts/verify-workspace-live.mjs && npm test && npm audit --audit-level=high",
     "smoke": "npm run build && node dist/smoke.js",
     "start": "node --enable-source-maps dist/index.js",
     "dev": "tsx src/index.ts"

@@ -144,3 +144,46 @@ Before moving an existing bot token from wbot:
    conversation. Creating two topics for one workspace must also yield two threads.
 
 The standalone bridge has not yet replaced the live wbot bridge.
+
+## Explicit wbot service handoff
+
+`scripts/deploy-wbot-handoff.mjs` is an operator-only migration utility, not an
+automatic startup action. It reads the existing local wbot credentials without
+printing them, backs up the legacy unit/session records, snapshots the built
+runtime into a separate release directory and installs a new user service.
+It creates a dedicated restricted `codex` parent channel and `wbot工程` private
+topic, leaving trade notification settings unchanged. Configuration and state
+are stored outside Git with `0600` permissions. It intentionally refuses existing
+rollout manifests, matching parent channels or service units rather than overwriting.
+
+After `npm run verify` and `npm run build`, explicitly run:
+
+```bash
+node scripts/deploy-wbot-handoff.mjs prepare
+CODEX_DISCORD_ENV_FILE="$HOME/.config/discordgpt/discordgpt.env" \
+  node scripts/verify-workspace-live.mjs "$HOME/.config/discordgpt/handoff.json"
+```
+
+The live acceptance starts one new Codex workspace thread and asks for a short
+reply with no tools or file changes, then sends its result to the new topic. It
+does not resume the legacy DM writer. The handoff must run in a separate systemd
+transient service when the current conversation is owned by the old service:
+
+```bash
+systemd-run --user --unit=discordgpt-handoff \
+  --property=StandardInput=null --property=UMask=0077 \
+  /absolute/path/to/node /absolute/path/to/discordgpt/scripts/deploy-wbot-handoff.mjs handoff
+```
+
+The worker waits for all legacy pending flags to clear and a 15-second idle grace,
+up to 20 minutes. It then stops/disables only the old chat service, refreshes the
+DM mapping, starts/enables the independent service and checks Gateway-ready logs.
+Success sends the topic link by DM; startup failure restores the old service.
+Wait for the completion DM before sending a task in the newly-created topic.
+Pending flags are not a durable delivery acknowledgment, so this is a guarded
+operator migration, not a general zero-downtime message handoff protocol.
+
+Inspect with `journalctl --user -u discordgpt-handoff -u discordgpt` and the
+non-secret `~/.config/discordgpt/handoff.json` manifest. Secrets remain solely in
+the protected instance configuration. A failed prepare may have created partial
+Discord resources; inspect those before rerunning rather than deleting blindly.
