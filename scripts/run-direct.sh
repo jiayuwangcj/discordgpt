@@ -21,7 +21,7 @@ set +a
 : "${CODEX_PROJECT_DIR:?CODEX_PROJECT_DIR is required}"
 : "${CODEX_APP_SERVER_URL:?CODEX_APP_SERVER_URL is required}"
 codex_bin=${CODEX_BIN:-codex}
-sandbox=${CODEX_SANDBOX:-workspace-write}
+sandbox=${CODEX_SANDBOX:-danger-full-access}
 approval=${CODEX_APPROVAL_POLICY:-never}
 model=${CODEX_MODEL:-}
 
@@ -61,7 +61,7 @@ trap cleanup EXIT INT TERM
 mkdir -p "$state_dir/logs"
 chmod 700 "$state_dir" "$state_dir/logs"
 "$codex_bin" app-server --listen "$CODEX_APP_SERVER_URL" \
-  >>"$state_dir/logs/app-server.log" 2>&1 &
+  </dev/null >>"$state_dir/logs/app-server.log" 2>&1 &
 app_pid=$!
 printf '%s\n' "$app_pid" >"$state_dir/app-server.pid"
 
@@ -88,7 +88,7 @@ chmod 600 "$state_dir/thread-id"
 
 CODEX_SHARED_THREAD_ID="$thread_id" CODEX_DISCORD_ENV_FILE="$instance_env" \
   node --env-file="$instance_env" "$repo_dir/dist/index.js" \
-  >>"$state_dir/logs/bridge.log" 2>&1 &
+  </dev/null >>"$state_dir/logs/bridge.log" 2>&1 &
 bridge_pid=$!
 printf '%s\n' "$bridge_pid" >"$state_dir/bridge.pid"
 

@@ -5,9 +5,10 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+const transportTest = process.env.DISCORDGPT_OFFLINE_TESTS === "1" ? test.skip : test;
 import { WebSocketServer } from "ws";
 
-for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process: ${scenario}`, { timeout: 20000 }, async () => {
+for (const scenario of ["dm", "topics", "guild"]) transportTest(`standalone bot process: ${scenario}`, { timeout: 20000 }, async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "discordgpt-runtime-"));
   const bot = { id: "100000000000000001", username: "testbot", discriminator: "0001", avatar: null, bot: true };
   const user = { id: "100000000000000002", username: "tester", discriminator: "0001", avatar: null };
@@ -25,11 +26,11 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
   const httpCalls = [];
   let gatewaySocket;
   let sequence = 2;
-  const sendMessage = (channelId, content, type = 1) => gatewaySocket.send(JSON.stringify({
+  const sendMessage = (channelId, content, type = 1, author = user) => gatewaySocket.send(JSON.stringify({
     op: 0, t: "MESSAGE_CREATE", s: sequence++, d: {
       id: String(BigInt("100000000000000100") + BigInt(sequence)), channel_id: channelId,
       channel_type: type, ...(type !== 1 ? { guild_id: guild, member: { roles: [], joined_at: new Date().toISOString() } } : {}),
-      author: user, content: type === 0 ? `<@${bot.id}> ${content}` : content,
+      author, content: type === 0 ? `<@${bot.id}> ${content}` : content,
       timestamp: new Date().toISOString(), type: 0, mentions: type === 0 ? [bot] : [], mention_roles: [],
       attachments: [], embeds: [], components: [], flags: 0, pinned: false, tts: false,
     },
@@ -47,6 +48,10 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
     if (req.url.includes("gateway/bot")) {
       res.end(JSON.stringify({ url: `ws://127.0.0.1:${gateway.address().port}`, shards: 1,
         session_start_limit: { total: 1000, remaining: 999, reset_after: 60000, max_concurrency: 1 } }));
+    } else if (req.method === "POST" && req.url.endsWith("/users/@me/channels")) {
+      res.end(JSON.stringify({ id: channel, type: 1, recipients: [user] }));
+    } else if (req.url.includes("/applications/") && req.url.endsWith("/commands")) {
+      res.end(JSON.stringify({ ...JSON.parse(body), id: "100000000000000200", application_id: bot.id, version: "1" }));
     } else if (req.url.includes("users/@me")) res.end(JSON.stringify(bot));
     else if (req.method === "POST" && req.url.endsWith("/threads")) {
       const payload = JSON.parse(body);
@@ -61,33 +66,21 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
     else if (req.method === "POST" && req.url.includes("/messages")) {
       const payload = JSON.parse(body);
       const replyChannel = req.url.match(/channels\/(\d+)/)[1];
-      if (scenario === "dm") received(payload);
-      else if (payload.content.startsWith("Created topic") || payload.content.startsWith("已创建话题")) {
+      if (payload.content.startsWith("【系统消息】")) { /* Lifecycle notices do not count as model replies. */ }
+      else if (scenario === "dm") received(payload);
+      else if (payload.content.startsWith("Created topic")) {
         setTimeout(() => {
-          if (scenario === "natural") {
-            sendMessage(parent, topics.length === 1 ? "打开 alpha" : "列出我的工作区和话题", 0);
-          } else if (topics.length === 1) sendMessage(parent, "!codex topic beta Backend", 0);
+          if (topics.length === 1) sendMessage(parent, "!codex topic beta Backend", 0);
           else {
             sendMessage(topics[0].id, "alpha-task", 12);
             sendMessage(topics[1].id, "beta-task", 12);
             sendMessage(channel, "dm-task");
+            if (scenario === "guild") sendMessage(parent, "列出我的工作区和话题", 0);
           }
-        }, 10);
-      } else if (scenario === "natural" && payload.content.startsWith("打开话题")) {
-        assert.equal(topics.length, 1);
-        setTimeout(() => sendMessage(parent, "给 beta 开一个话题，叫 Backend", 0), 10);
-      } else if (scenario === "natural" && payload.content.startsWith("工作区：")) {
-        assert.ok(payload.content.includes(topics[0].id) && payload.content.includes(topics[1].id));
-        setTimeout(() => sendMessage(parent, "修改工程代码", 0), 10);
-      } else if (scenario === "natural" && payload.content.startsWith("这里是工作区管理入口")) {
-        setTimeout(() => {
-          sendMessage(topics[0].id, "alpha-task", 12);
-          sendMessage(topics[1].id, "beta-task", 12);
-          sendMessage(channel, "dm-task");
         }, 10);
       } else if (payload.content === "Standalone reply") {
         replies.push({ ...payload, channel: replyChannel });
-        if (replies.length === 3) received(replies);
+        if (replies.length === (scenario === "guild" ? 4 : 3)) received(replies);
       }
       res.end(JSON.stringify({ id: "100000000000000005", channel_id: channel, author: bot,
         content: payload.content, timestamp: new Date().toISOString(), type: 0, attachments: [], embeds: [] }));
@@ -116,8 +109,12 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
         channels: [{ id: parent, guild_id: guild, type: 0, name: "codex", permission_overwrites: [] }],
         threads: [], emojis: [], stickers: [], presences: [], voice_states: [], features: [],
       } }));
-      setTimeout(() => scenario === "dm" ? sendMessage(channel, "hello") : sendMessage(parent,
-        scenario === "natural" ? "给 alpha 开一个话题，叫 Frontend" : "!codex topic alpha Frontend", 0), 100);
+      setTimeout(() => {
+        // Unlisted DM channels remain accessible only to allowlisted users.
+        sendMessage(channel, "unauthorized management task", 1, { ...user, id: "100000000000000099" });
+        if (scenario === "dm") sendMessage(channel, "hello");
+        else sendMessage(parent, "!codex topic alpha Frontend", 0);
+      }, 100);
     });
   });
   let prompt;
@@ -128,6 +125,10 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
     const event = JSON.parse(raw.toString());
     calls.push(event);
     if (event.method === "initialize") socket.send(JSON.stringify({ id: event.id, result: {} }));
+    if (event.method === "thread/read") socket.send(JSON.stringify({ id: event.id, result: { thread: { id: event.params.threadId, status: { type: "idle" } } } }));
+    if (event.method === "model/list") socket.send(JSON.stringify({ id: event.id, result: { data: [{ id: "test-model", model: "test-model", displayName: "Test model", supportedReasoningEfforts: [{ reasoningEffort: "medium" }], defaultReasoningEffort: "medium", isDefault: true }], nextCursor: null } }));
+    if (event.method === "account/rateLimits/read") socket.send(JSON.stringify({ id: event.id, result: { rateLimits: { primary: { usedPercent: 20, windowDurationMins: 300 } }, ordinaryUsageAllowed: true } }));
+    if (event.method === "account/read") socket.send(JSON.stringify({ id: event.id, result: { account: { type: "chatgpt", planType: "pro" } } }));
     if (event.method === "thread/resume") socket.send(JSON.stringify({ id: event.id, result: {} }));
     if (event.method === "thread/start") socket.send(JSON.stringify({ id: event.id, result: { thread: { id: scenario === "dm" ? "thread-test" : `thread-${++threadCount}` } } }));
     if (event.method === "turn/start") {
@@ -144,7 +145,8 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
       CODEX_DISCORD_STATE_DIR: path.join(dir, "state"),
       CODEX_WORKSPACES_FILE: workspaceFile,
       DISCORD_REQUIRE_MENTION: "true",
-      ...(scenario !== "dm" ? { DISCORD_ALLOWED_CHANNEL_IDS: `${parent},${channel}`, CODEX_SHARED_THREAD_ID: "shared-dm" } : {}),
+      DISCORD_ALLOWED_CHANNEL_IDS: parent,
+      ...(scenario === "topics" ? { CODEX_SHARED_THREAD_ID: "shared-dm" } : {}),
       CODEX_DISCORD_ENV_FILE: path.join(dir, "missing.env"),
       CODEX_APP_SERVER_URL: `ws://127.0.0.1:${codex.address().port}`,
       DISCORD_API_BASE_URL: `http://127.0.0.1:${api.address().port}/api` },
@@ -159,7 +161,9 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
       timer = setTimeout(() => reject(new Error(`Bot did not reply: ${logs}\nHTTP: ${httpCalls.join("\n")}`)), 12000);
     })]);
     const state = JSON.parse(await fs.readFile(path.join(dir, "state/state.json"), "utf8"));
+    assert.ok(!calls.some((event) => event.method === "turn/start" && event.params.input[0].text === "unauthorized management task"));
     if (scenario === "dm") {
+      assert.equal(calls.filter((event) => event.method === "turn/start").length, 1);
       assert.equal(payload.content, "Standalone reply");
       assert.equal(prompt, "hello");
       assert.deepEqual(payload.allowed_mentions.parse, []);
@@ -169,13 +173,17 @@ for (const scenario of ["dm", "topics", "natural"]) test(`standalone bot process
       assert.equal(state.workspaces[topics[0].id].cwd, workspaceA);
       assert.equal(state.workspaces[topics[1].id].cwd, workspaceB);
       const turns = calls.filter((event) => event.method === "turn/start");
-      assert.equal(turns.length, 3);
-      assert.equal(new Set(turns.map((event) => event.params.threadId)).size, 3);
-      assert.equal(turns.find((event) => event.params.input[0].text === "dm-task").params.threadId, "shared-dm");
+      const expectedTurns = scenario === "guild" ? 4 : 3;
+      assert.equal(turns.length, expectedTurns);
+      assert.equal(new Set(turns.map((event) => event.params.threadId)).size, expectedTurns);
+      if (scenario === "topics") assert.equal(turns.find((event) => event.params.input[0].text === "dm-task").params.threadId, "shared-dm");
+      if (scenario === "guild") {
+        assert.equal(turns.find((event) => event.params.input[0].text === "列出我的工作区和话题").params.cwd, dir);
+      }
       for (const [task, cwd] of [["alpha-task", workspaceA], ["beta-task", workspaceB], ["dm-task", dir]]) {
         assert.equal(turns.find((event) => event.params.input[0].text === task).params.cwd, cwd);
       }
-      assert.deepEqual(new Set(payload.map((reply) => reply.channel)), new Set([channel, ...topics.map((topic) => topic.id)]));
+      assert.deepEqual(new Set(payload.map((reply) => reply.channel)), new Set([channel, ...topics.map((topic) => topic.id), ...(scenario === "guild" ? [parent] : [])]));
     }
   } finally {
     clearTimeout(timer);

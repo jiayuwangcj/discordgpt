@@ -3,10 +3,13 @@ import path from "node:path";
 
 export type WorkspaceBinding = { workspace: string; cwd: string };
 export type ManagedTopic = { id: string; parentId: string; guildId: string; ownerId: string; name: string; workspace: string };
+export type ModelSettings = { model: string; effort?: string };
 type StateData = {
   threads: Record<string, string>;
   workspaces?: Record<string, WorkspaceBinding>;
   managedTopics?: Record<string, ManagedTopic>;
+  settings?: Record<string, ModelSettings>;
+  linkedThreads?: Record<string, boolean>;
 };
 
 export class StateStore {
@@ -30,6 +33,51 @@ export class StateStore {
 
   get(channelId: string): string | undefined {
     return this.data.threads[channelId];
+  }
+  threadCount(): number { return Object.keys(this.data.threads).length; }
+
+  isLinkedThread(threadId: string): boolean { return this.data.linkedThreads?.[threadId] === true; }
+
+  async attach(channelId: string, threadId: string, settings?: ModelSettings): Promise<void> {
+    const previousThread = this.data.threads[channelId];
+    const wasLinked = this.isLinkedThread(threadId);
+    const key = `thread:${threadId}`;
+    const previousSettings = this.data.settings?.[key];
+    const localSettings = Object.entries(this.data.threads).filter(([, id]) => id === threadId)
+      .map(([channel]) => this.data.settings?.[channel]).find((value) => value !== undefined);
+    const nextSettings = localSettings ?? settings;
+    this.data.threads[channelId] = threadId;
+    this.data.linkedThreads ??= {};
+    this.data.linkedThreads[threadId] = true;
+    this.data.settings ??= {};
+    // An already-linked thread has one shared model setting; another attachment
+    // must not overwrite it with a stale setting from a different window.
+    if (!previousSettings && nextSettings) this.data.settings[key] = { ...nextSettings };
+    try { await this.save(); }
+    catch (error) {
+      if (previousThread) this.data.threads[channelId] = previousThread;
+      else delete this.data.threads[channelId];
+      if (!wasLinked) delete this.data.linkedThreads[threadId];
+      if (!previousSettings && nextSettings) delete this.data.settings[key];
+      throw error;
+    }
+  }
+
+  settings(key: string): ModelSettings | undefined {
+    const value = this.data.settings?.[key];
+    return value ? { ...value } : undefined;
+  }
+
+  async setSettings(key: string, settings: ModelSettings): Promise<void> {
+    const previous = this.data.settings?.[key];
+    this.data.settings ??= {};
+    this.data.settings[key] = { ...settings };
+    try { await this.save(); }
+    catch (error) {
+      if (previous) this.data.settings[key] = previous;
+      else delete this.data.settings[key];
+      throw error;
+    }
   }
 
   binding(channelId: string): WorkspaceBinding | undefined {
@@ -63,8 +111,20 @@ export class StateStore {
   }
 
   async reset(channelId: string): Promise<void> {
+    const threadId = this.get(channelId);
+    const previousSettings = this.data.settings?.[channelId];
+    const settings = threadId && this.isLinkedThread(threadId) ? this.settings(`thread:${threadId}`) : undefined;
+    if (settings) { this.data.settings ??= {}; this.data.settings[channelId] = settings; }
     delete this.data.threads[channelId];
-    await this.save();
+    try { await this.save(); }
+    catch (error) {
+      if (threadId) this.data.threads[channelId] = threadId;
+      if (settings) {
+        if (previousSettings) this.data.settings![channelId] = previousSettings;
+        else delete this.data.settings![channelId];
+      }
+      throw error;
+    }
   }
 
   private save(): Promise<void> {

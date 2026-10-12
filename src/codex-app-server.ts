@@ -2,6 +2,7 @@ import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import readline from "node:readline";
 import { EventEmitter } from "node:events";
 import WebSocket from "ws";
+import type { ModelSettings } from "./state.js";
 
 type JsonObject = Record<string, unknown>;
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
@@ -12,6 +13,7 @@ export type TurnResult = {
   finalText: string;
   turnId: string;
   status: string;
+  error?: { message: string; codexErrorInfo?: unknown };
 };
 export type TurnInput =
   | { type: "text"; text: string; text_elements: unknown[] }
@@ -21,6 +23,8 @@ export type TurnProgress =
   | { type: "tool_boundary" };
 
 export class CodexAppServer extends EventEmitter {
+  userAgent = "";
+  private metadataByThread = new Map<string, any>();
   private proc?: ChildProcessWithoutNullStreams;
   private lines?: readline.Interface;
   private socket?: WebSocket;
@@ -41,6 +45,7 @@ export class CodexAppServer extends EventEmitter {
     itemKinds: Map<string, "commentary" | "final_answer">;
     progress: TurnProgress[];
     status?: string;
+    error?: TurnResult["error"];
   }>();
 
   constructor(
@@ -56,9 +61,10 @@ export class CodexAppServer extends EventEmitter {
     if (this.remote) await this.startWebSocket();
     else this.startStdio();
 
-    await this.request("initialize", {
-      clientInfo: { name: "codex_discord_multibot", title: "Codex Discord Multibot", version: "0.1.0" },
+    const initialization = await this.request("initialize", {
+      clientInfo: { name: "discordgpt", title: "Discord Codex Bridge", version: "0.4.0" },
     });
+    this.userAgent = typeof initialization.userAgent === "string" ? initialization.userAgent : "";
     this.notify("initialized", {});
   }
 
@@ -70,17 +76,33 @@ export class CodexAppServer extends EventEmitter {
       approvalPolicy: this.defaults.approvalPolicy,
       ephemeral: false,
     });
+    this.metadataByThread.set(result.thread.id, result.thread);
     return result.thread.id as string;
   }
 
-  async resumeThread(threadId: string, cwd = this.cwd): Promise<void> {
-    await this.request("thread/resume", {
+  async resumeThread(threadId: string, cwd = this.cwd, preserveModel = false): Promise<ModelSettings | undefined> {
+    const result = await this.request("thread/resume", {
       threadId,
       cwd,
-      model: this.defaults.model ?? null,
+      ...(preserveModel ? {} : { model: this.defaults.model ?? null }),
       sandbox: this.defaults.sandbox,
       approvalPolicy: this.defaults.approvalPolicy,
     });
+    if (result.thread) this.metadataByThread.set(threadId, result.thread);
+    return typeof result.model === "string" ? { model: result.model,
+      ...(result.reasoningEffort ? { effort: result.reasoningEffort } : {}) } : undefined;
+  }
+
+  async listThreads(cwd: string, searchTerm = "", cursor: string | null = null, limit = 10,
+    timeoutMs = 20000): Promise<{ data: any[]; nextCursor: string | null }> {
+    const page = await this.request("thread/list", { cwd, searchTerm: searchTerm || null, cursor,
+      limit, archived: false, sortKey: "updated_at", sortDirection: "desc" }, timeoutMs);
+    if (!Array.isArray(page.data) || (page.nextCursor != null && typeof page.nextCursor !== "string")) {
+      throw new Error("Invalid thread list");
+    }
+    // Filter locally as well: never expose a different project's conversations.
+    return { data: page.data.filter((thread: any) => thread.cwd === cwd && typeof thread.id === "string" && !thread.ephemeral),
+      nextCursor: page.nextCursor ?? null };
   }
 
   async runTurn(
@@ -89,6 +111,7 @@ export class CodexAppServer extends EventEmitter {
     onStarted?: (turnId: string) => void,
     onProgress?: (progress: TurnProgress) => void,
     cwd = this.cwd,
+    settings?: ModelSettings,
   ): Promise<TurnResult> {
     const input: TurnInput[] = typeof prompt === "string"
       ? [{ type: "text", text: prompt, text_elements: [] }]
@@ -98,7 +121,8 @@ export class CodexAppServer extends EventEmitter {
       input,
       cwd,
       approvalPolicy: this.defaults.approvalPolicy,
-      model: this.defaults.model ?? null,
+      model: settings?.model ?? this.defaults.model ?? null,
+      ...(settings?.effort ? { effort: settings.effort } : {}),
     });
     const turnId = response.turn.id as string;
     onStarted?.(turnId);
@@ -113,6 +137,7 @@ export class CodexAppServer extends EventEmitter {
           finalText: early.finalText,
           turnId,
           status: early.status,
+          error: early.error,
         });
       } else {
         const commentaryText = early?.commentaryText ?? "";
@@ -133,6 +158,35 @@ export class CodexAppServer extends EventEmitter {
   async interrupt(threadId: string, turnId: string): Promise<void> {
     await this.request("turn/interrupt", { threadId, turnId });
   }
+
+  async steer(threadId: string, turnId: string, text: string): Promise<void> {
+    await this.request("turn/steer", { threadId, expectedTurnId: turnId,
+      input: [{ type: "text", text, text_elements: [] }] });
+  }
+
+  async listModels(): Promise<any[]> {
+    const models: any[] = [];
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    do {
+      const page = await this.request("model/list", { limit: 100, cursor, includeHidden: false });
+      if (!Array.isArray(page.data)) throw new Error("Invalid model catalog");
+      models.push(...page.data);
+      cursor = page.nextCursor ?? null;
+      if (cursor && seen.has(cursor)) throw new Error("Repeated model catalog cursor");
+      if (cursor) seen.add(cursor);
+    } while (cursor);
+    return models;
+  }
+
+  async readUsage(): Promise<any> { return this.request("account/rateLimits/read", {}); }
+  async readAccount(): Promise<any> { return this.request("account/read", { refreshToken: false }); }
+  async readThread(threadId: string): Promise<any> {
+    const result = await this.request("thread/read", { threadId, includeTurns: false });
+    this.metadataByThread.set(threadId, result.thread);
+    return result.thread;
+  }
+  threadMetadata(threadId: string): any { return this.metadataByThread.get(threadId); }
 
   async close(): Promise<void> {
     this.closing = true;
@@ -192,13 +246,13 @@ export class CodexAppServer extends EventEmitter {
     this.earlyTurnEvents.clear();
   }
 
-  private request(method: string, params: JsonObject): Promise<any> {
+  private request(method: string, params: JsonObject, timeoutMs = 20000): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Codex RPC timed out: ${method}`));
-      }, 20000);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); },
@@ -307,10 +361,12 @@ export class CodexAppServer extends EventEmitter {
           finalText: turn.finalText,
           turnId,
           status,
+          error: message.params.turn.error ?? undefined,
         });
       } else {
         const early = this.getEarlyTurn(turnId);
         early.status = String(message.params.turn.status ?? "completed");
+        early.error = message.params.turn.error ?? undefined;
       }
     } else if (message.method === "error") {
       this.emit("log", `Codex error: ${JSON.stringify(message.params)}`);

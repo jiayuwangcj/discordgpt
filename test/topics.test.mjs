@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+const transportTest = process.env.DISCORDGPT_OFFLINE_TESTS === "1" ? test.skip : test;
 import { WebSocketServer } from "ws";
 import { StateStore } from "../dist/state.js";
 import { loadWorkspaces } from "../dist/workspaces.js";
@@ -60,7 +61,7 @@ test("workspace host configuration validates aliases, absolute existing director
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test("start/resume/turn RPC always receives the selected topic cwd", async () => {
+transportTest("start/resume/turn RPC always receives the selected topic cwd", async () => {
   const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise((resolve) => wss.once("listening", resolve));
   const calls = [];

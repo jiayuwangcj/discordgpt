@@ -1,6 +1,6 @@
 import { CodexAppServer } from "./codex-app-server.js";
 
-const [url, cwd, sandbox = "workspace-write", approvalPolicy = "never", model = "", existingThread = ""] = process.argv.slice(2);
+const [url, cwd, sandbox = "danger-full-access", approvalPolicy = "never", model = "", existingThread = ""] = process.argv.slice(2);
 if (!url || !cwd) {
   console.error("Usage: bootstrap-thread APP_SERVER_URL PROJECT_DIR [SANDBOX] [APPROVAL_POLICY] [MODEL]");
   process.exit(2);

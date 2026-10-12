@@ -25,12 +25,19 @@ if (process.env.CODEX_APP_SERVER_URL) {
     throw new Error("CODEX_APP_SERVER_URL requires loopback ws:// or authenticated wss://");
   }
 }
-if (!["read-only", "workspace-write", "danger-full-access"].includes(process.env.CODEX_SANDBOX || "workspace-write")) {
+if (!["read-only", "workspace-write", "danger-full-access"].includes(process.env.CODEX_SANDBOX || "danger-full-access")) {
   throw new Error("Unsupported CODEX_SANDBOX");
 }
 
+const interactionPort = Number(process.env.DISCORD_INTERACTIONS_PORT || 0);
+if (!Number.isInteger(interactionPort) || interactionPort < 0 || interactionPort > 65535) throw new Error("Invalid interactions port");
+if (interactionPort && !/^[a-f0-9]{64}$/i.test(process.env.DISCORD_PUBLIC_KEY || "")) throw new Error("HTTP interactions require DISCORD_PUBLIC_KEY");
+
 export const config = {
   token: process.env.DISCORD_BOT_TOKEN,
+  interactionPort,
+  interactionPublicKey: process.env.DISCORD_PUBLIC_KEY || "",
+  interactionFallbackUrl: process.env.DISCORD_INTERACTIONS_FALLBACK_URL || undefined,
   discordApiBaseUrl: process.env.DISCORD_API_BASE_URL || "https://discord.com/api",
   projectDir,
   workspacesFile: process.env.CODEX_WORKSPACES_FILE || undefined,
@@ -43,7 +50,8 @@ export const config = {
   appServerToken: process.env.CODEX_APP_SERVER_TOKEN || undefined,
   sharedThreadId: process.env.CODEX_SHARED_THREAD_ID || undefined,
   model: process.env.CODEX_MODEL || undefined,
-  sandbox: process.env.CODEX_SANDBOX || "workspace-write",
+  effort: process.env.CODEX_REASONING_EFFORT || undefined,
+  sandbox: process.env.CODEX_SANDBOX || "danger-full-access",
   approvalPolicy: process.env.CODEX_APPROVAL_POLICY || "never",
   stateDir: path.resolve(process.env.CODEX_DISCORD_STATE_DIR || ".state"),
 };

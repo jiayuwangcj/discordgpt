@@ -22,7 +22,7 @@ try {
   if(result.status!=='completed'||!result.finalText?.includes('wbot 工程已就绪'))throw new Error('Live model acceptance failed, status='+result.status);
   const response=await fetch('https://discord.com/api/v10/channels/'+manifest.topicId+'/messages',{
     method:'POST',signal:AbortSignal.timeout(15000),
-    headers:{Authorization:'Bot '+config.token,'Content-Type':'application/json','User-Agent':'DiscordBot (https://github.com/jiayuwangcj/discordgpt, 0.3.0)'},
+    headers:{Authorization:'Bot '+config.token,'Content-Type':'application/json','User-Agent':'DiscordBot (https://discord.com, v1.0)'},
     body:JSON.stringify({content:'初始化验收通过：'+result.finalText+'\n已建立独立 Codex 会话，工作目录：'+binding.cwd+'。等待聊天服务交接完成后即可继续。',allowed_mentions:{parse:[]}}),
   });
   if(!response.ok)throw new Error('Discord live output failed: HTTP '+response.status);

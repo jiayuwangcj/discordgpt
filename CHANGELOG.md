@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.0 — 2026-10-12
+
+- 2026-10-12: Default new and bound/resumed Codex conversations to YOLO (`danger-full-access`, `never`), including bootstrap/direct and fresh handoff settings. Preserve explicit overrides; `upgrade-service.mjs deploy --yolo` switches existing restricted instance configuration with normal rollback.
+
+- Remove the rule-only management-channel interceptor; guild tasks now reach Codex. Authorized DMs bypass the guild channel allowlist.
+- Restore live catalog model/effort controls, per-conversation persisted settings, account remaining-usage/status, lifecycle DMs and long-task heartbeat.
+- Restore slash controls, task cards, FIFO cancellation/steering and quota pause/continuation; replay protection, aggregate presence and rotating private audit metadata.
+- Add signed HTTP interaction ingress with passthrough for existing business actions, and a guarded upgrade/rollback utility that preserves thread bindings and model/effort.
+- Add `/sessions` workspace-scoped existing-conversation discovery and `/bind` title autocomplete/full thread ID. Resume original context without creating a thread, persist bindings, share FIFO/model settings for the same thread, and detach only the current window on reset. Keep sandbox restrictions and private session discovery.
+- Preserve the Discord User-Agent when forwarding signed business interactions through an existing proxy filter.
+- Add FEATURE_PARITY.md and protocol/runtime coverage. All 42 tests (no skips), type checks, dependency audit and actual app-server smoke passed.
+- Deployed through the guarded host upgrader: fresh Gateway/command/catalog/usage health, public ingress signature rejection, Discord signed PING acceptance, and native resume of all three original contexts with YOLO permissions passed. Manual slash/model/queue-button and business-button clicks remain separate acceptance.
+
 ## v0.3.0 — 2026-10-11
 
 - Added bounded Chinese natural-language workspace management in server parent chats.

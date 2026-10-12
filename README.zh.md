@@ -1,10 +1,10 @@
 # discordgpt
 
-通过 Discord 控制持久化的 OpenAI Codex 会话。主频道负责工作区管理；每个工作区话题或私信频道对应一个独立 Codex thread，同频道任务串行执行，并可从终端连接同一个本地 app-server。
+通过 Discord 控制持久化的 OpenAI Codex 会话。主频道、工作区话题和私信频道的普通消息都交给 Codex 大模型；每个频道对应一个持久 Codex thread，同频道任务串行执行，并可从终端连接同一个本地 app-server。
 
 本项目已从 `wbot` 独立：不包含交易、行情、数据库或正式推送频道逻辑。迁移范围和后续工作见 [MIGRATION.md](MIGRATION.md)，开源方案比较与来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
-当前版本 **v0.3.0**。独立进程已通过真实 Codex app-server 启动与握手验收；Discord 收发和 turn 协议由本地模拟服务器测试，尚未切换 wbot 的真实机器人。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前代码及线上版本均为 **v0.4.0**（2026-10-12 上线）。42 项完整测试、真实 app-server smoke、服务健康检查及 Discord 公网签名握手通过；原会话绑定保留，线上权限已切换为 `danger-full-access / never`。人工 slash 命令及按钮点击验收仍待使用方确认。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 默认只在任务完成后统一回复。`DISCORD_PROGRESS_ENABLED=true` 可打开工具执行前的进度消息。停止和状态指令立即执行，不会排在长任务后面；同频道任务串行，不同频道可并行，显式绑定同一 shared thread 的频道共用队列。
 
@@ -23,7 +23,7 @@
 - Discord 用户和频道 allowlist
 - 每个 Discord channel 独立持久 thread
 - 同一 channel 的任务自动排队，避免并发写文件
-- `workspace-write` sandbox，默认不允许任何权限升级
+- 新建和绑定会话默认 YOLO：`danger-full-access`＋`never`，可显式配置受限模式
 - `!codex status`、`!codex stop`、`!codex reset`
 - 按需读取当前频道最近 1–100 条历史消息；默认不会读取
 - 附件 URL 会加入任务上下文
@@ -32,21 +32,9 @@
 
 ## 工作区话题
 
-主聊天现在是工作区助手，直接说：
+主频道、私聊和已绑定工作区的话题都支持直接向 Codex 大模型发送任务，包括工程开发和管理任务。主频道默认需要 @机器人，私聊和已绑定话题不需要。已移除通过规则解析中文请求的管理助手，普通消息和显式历史读取请求不会再被管理入口拦截。
 
-```text
-@机器人 给 wbot 开一个话题，叫交易开发
-@机器人 打开 wbot
-@机器人 打开聊天机器人项目
-@机器人 列出我的工作区和话题
-@机器人 再建一个 wbot 话题
-```
-
-已有话题返回可点击入口；同一工作区多个话题时列出入口让你选择。没有话题时，“打开工作区”会创建新入口。工作区不明确会追问，5 分钟内直接回复代号即可（默认服务器仍需 @机器人）；“取消”结束追问。同名创建不会另起上下文；要独立新话题请换名字。
-
-首版采用受控中文意图解析和可复用工具接口，不是 MCP 服务，也不是任意自然语言都能理解的大模型助手；不支持的表达会给使用提示。主频道不会把普通聊天或历史读取转成工程执行；工程任务请进入话题或私聊。私聊及话题内自然语言仍是给 Codex 的任务，不会被管理助手拦截。
-
-话题索引持久保存，只列出当前父频道下由你创建的已登记话题，不跨用户或频道搜索。v0.2.0 已有话题仍能直接使用，但旧版本没有保存创建者索引，因此不会自动在助手列表中登记。直接指令仍保留；自然语言删除、重置不提供工具，避免误操作。
+工作区话题创建仍使用 `!codex topic <工作区代号> [话题名]`，`!codex workspaces` 可在私聊或服务器频道列出已配置目录。创建 Discord 话题需要在服务器文字频道执行。私聊支持 `status`、`stop`、`reset`、`history`，不会受服务器频道白名单限制；用户白名单、文件沙箱和主机配置仍然生效。
 
 在主机上配置工作区代号，路径必须是已存在的绝对目录。例如将下面的 JSON 保存到仓库外的 `~/.config/discordgpt/workspaces.json`，权限设为 `0600`：
 
@@ -69,18 +57,28 @@
 
 机器人创建私人话题并添加发起人；进入话题直接聊天，无需再次 @。切换 Discord 话题就是切换工作区和上下文。同一个工作区可创建多个话题，各自拥有独立 Codex thread。话题改名不改变目录，`reset` 只清空当前话题的 Codex 绑定，保留工作区。重启后绑定仍保留；已移除或迁移的目录配置会阻止旧话题执行，不会静默转到其他目录。
 
-机器人在父频道需要 View Channel、Send Messages、Read Message History、Create Private Threads、Send Messages in Threads、Manage Threads；不需要 Administrator。私人话题仍可被具有 Manage Threads 权限的服务器成员查看，不等同于端到端隐私。若设置频道白名单，已绑定话题继承父频道的允许状态，私聊频道 ID 需另行加入白名单（或不设置频道白名单）。
+机器人在父频道需要 View Channel、Send Messages、Read Message History、Create Private Threads、Send Messages in Threads、Manage Threads；不需要 Administrator。私人话题仍可被具有 Manage Threads 权限的服务器成员查看，不等同于端到端隐私。若设置频道白名单，已绑定话题继承父频道的允许状态，私聊不受频道白名单限制，仍校验用户白名单。
 
-私聊保持原有默认工作目录和独立上下文，不会与服务器话题共享。`CODEX_SHARED_THREAD_ID` 仅作用于原有未绑定频道，工作区话题始终独立。手工创建且未绑定的 Discord 话题不会执行任务，请使用创建指令。上下文隔离不是文件系统隔离：同工作区话题仍能访问相同工程文件，多个修改任务应使用独立 worktree。
+私聊保持原有默认工作目录和独立上下文；只有显式绑定同一个 Codex 会话才会共享上下文。`CODEX_SHARED_THREAD_ID` 为未绑定工作区的窗口提供默认共享会话，显式 `/bind` 优先。手工创建且未绑定的 Discord 话题不会执行任务，请使用创建指令。上下文隔离不是文件系统隔离：同工作区话题仍能访问相同工程文件，多个修改任务应使用独立 worktree。
 
-## 安全模型
+## 继续已有 Codex 会话
 
-Discord 是一个远程代码执行入口，务必保持最小权限：
+无需先发任务或创建新的 Codex 会话：在当前窗口使用 `/sessions` 查看当前工程最近更新的已有会话，或 `/sessions query:关键词` 按标题搜索。使用 `/bind` 的 `thread` 输入框搜索标题，从候选项中选择之前讨论的会话，也可以直接输入完整 thread ID。选择后，下一条普通消息继续原来的 Codex 上下文。候选项显示标题、更新时间和 ID 前缀；列表提供完整 ID 和下一页游标。
+
+私信也支持 `!codex sessions [标题关键词]`、`!codex sessions [关键词] --cursor <游标>` 和 `!codex bind <完整 thread ID>`。服务器中使用原生 slash 命令，历史会话列表和选择结果仅本人可见，文字命令不会公开历史会话标题。
+
+只列出当前工程、当前 Codex 后端可访问的非归档持久会话；`/bind` 还会检查工程目录和运行状态。其他工程的会话应在对应工作区话题内绑定。当前窗口或目标会话有执行、排队、额度暂停任务时不能换绑；恢复或保存失败保留当前绑定。绑定会恢复原会话的模型设置，但仍使用服务配置的 sandbox 和审批策略。
+
+多个窗口显式绑定同一个会话时，共用上下文、串行队列和模型设置，任务控制仍只作用于本人在当前窗口提交的任务。绑定持久化到 `state.json`，重启后保留。`/reset` 只解除当前窗口绑定，不删除原 Codex 会话，也不解除其他窗口的绑定；原会话仍可再次选择。默认共享会话已配置的窗口解除显式绑定后回到该默认会话。
+
+## 权限配置
+
+新建会话、`/bind` 恢复已有会话和直接启动模式默认使用 YOLO：
 
 1. `DISCORD_ALLOWED_USER_IDS` 默认必须显式填写；空值不会允许任何用户。
-2. 默认 `CODEX_SANDBOX=workspace-write`，Codex 只能写指定项目/workspace。
-3. 默认 `CODEX_APPROVAL_POLICY=never`，Discord 端不会批准越权请求。
-4. 不要使用 `danger-full-access`，除非 bot 运行在一次性隔离 VM/容器中。
+2. 默认 `CODEX_SANDBOX=danger-full-access`，不设置 Codex 文件与网络沙箱限制；实际能力受服务进程的宿主机权限约束。
+3. 默认 `CODEX_APPROVAL_POLICY=never`，执行时不等待审批。
+4. 实例显式配置优先；需要限制时可设置 `workspace-write` 或 `read-only`。已有实例配置中的 `workspace-write` 不会因代码默认值变化自动消失。升级脚本的 `--yolo` 参数会显式把该实例切换为 YOLO，并在发布失败时恢复旧配置。
 5. bot token 只放在 `.env`，不要提交 Git。
 
 ## 准备 Discord bot
@@ -283,7 +281,7 @@ WebSocket 默认只允许 `ws://127.0.0.1:*` 或 `ws://localhost:*`。不要把�
 - TUI 需要先知道 Discord channel 对应的 thread ID；目前通过 `!codex status` 后运行 attach 脚本完成，尚未自动切换。
 - 任务队列仅保存在内存；进程重启后需重发未完成任务。会话绑定保持持久化。
 - writer 冲突或 resume 失败不会自动新建会话；排查后重试，或显式 reset。
-- 动态模型/强度切换、账号用量、JSONL 审计记录尚待从 wbot 迁入。
+- 动态模型/推理强度、账号用量、系统通知、队列控制和 JSONL 审计已补齐到 v0.4.0 候选代码；完整功能对照和待完成的线上验收见 [FEATURE_PARITY.md](FEATURE_PARITY.md)。
 
 ## 实验性微信 ClawBot 桥接
 
@@ -322,3 +320,13 @@ node --env-file=instances/my-weixin.env dist/weixin-index.js
 若扫码响应没有返回用户 ID，把首次消息日志中的 `from_user_id` 填入 `WEIXIN_ALLOWED_USER_IDS`。不要提交 state 目录或 credentials 文件，也不要把 app-server WebSocket 暴露到 HPC 外网。
 
 此入口目前是最小实验框架；图片/文件下载、输入状态、聊天命令以及生产级 token 失效恢复尚未实现。协议参考腾讯的 MIT 许可项目 `Tencent/openclaw-weixin`。
+
+## 模型、用量与任务控制
+
+私聊、主频道和已绑定话题均支持 `/model [模型] [强度]`、`/models`、`/status`、`/usage`、`/ps`、`/stop`、`/cancel [消息ID]`、`/steer 新方向`、`/resume`。也可使用对应 `!codex` 命令。模型目录和模型级推理强度来自 app-server；无效设置不会覆盖原值。模型设置按当前会话持久保存，下一轮任务生效；显式共享一个 Codex thread 的窗口共用设置和队列。
+
+额度属于账号，所有聊天窗口共享。读取失败显示上次结果；额度明确耗尽时暂停受影响任务及其后续队列。服务端明确许可后自动继续；`/resume` 可明确请求重试，`/cancel` 可取消暂停请求。不会因其他额度桶用尽而自动阻止所有模型，也不会仅凭重置时间猜测恢复。
+
+上线、正常下线和异常退出通知只发送给授权用户的私聊。任务暂停、恢复、排队和每 15 分钟一次的长任务保活发送到原窗口。队列卡片只允许原用户在原频道操作。`/compact` 和 `/side` 延续旧版的未支持提示；独立上下文可通过 `/topic` 创建。
+
+若 Discord 应用配置了 HTTP 交互入口，斜杠命令和按钮不会经 Gateway 送达。请按 [OPERATIONS.md](OPERATIONS.md) 配置签名验证入口和反向代理，新服务处理聊天控制，其他业务交互转发到原入口。

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+const transportTest = process.env.DISCORDGPT_OFFLINE_TESTS === "1" ? test.skip : test;
 import { WebSocketServer } from "ws";
 import { CodexAppServer } from "../dist/codex-app-server.js";
 import { StateStore } from "../dist/state.js";
@@ -42,7 +43,7 @@ test("channels serialize locally while other channels run and recover after fail
 });
 
 test("long replies preserve paragraphs, links and Unicode characters", () => {
-  const url = "https://tradedev.w-cloud.top:1443/reports/ppo/a-long-report/";
+  const url = "https://reports.example.com:1443/reports/ppo/a-long-report/";
   const text = `${"前".repeat(1800)}\n\n报告 [查看](${url})\n\n${"😀".repeat(1100)}`;
   const chunks = splitReply(text);
   assert.ok(chunks.every((part) => part.length <= 1900));
@@ -91,7 +92,7 @@ test("Slurm presence formats time and falls back outside Slurm", () => {
   assert.equal(presenceLabel({ node: "login05", project: "demo", slurmJobId: "" }), "login05 · demo");
 });
 
-test("shared WebSocket transport initializes and streams a turn", async () => {
+transportTest("shared WebSocket transport initializes and streams a turn", async () => {
   const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise((resolve) => wss.once("listening", resolve));
   const address = wss.address();
@@ -122,7 +123,7 @@ test("shared WebSocket transport initializes and streams a turn", async () => {
   await new Promise((resolve) => wss.close(resolve));
 });
 
-test("commentary progress is emitted before the final answer", async () => {
+transportTest("commentary progress is emitted before the final answer", async () => {
   const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise((resolve) => wss.once("listening", resolve));
   const address = wss.address();

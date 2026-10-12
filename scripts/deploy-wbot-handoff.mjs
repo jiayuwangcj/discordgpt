@@ -21,7 +21,7 @@ if (!token) throw new Error('Existing Discord token missing');
 async function api(route, method = 'GET', body, attempt = 0) {
   const response = await fetch('https://discord.com/api/v10' + route, {
     method, signal:AbortSignal.timeout(15000),
-    headers:{Authorization:'Bot ' + token, 'Content-Type':'application/json', 'User-Agent':'DiscordBot (https://github.com/jiayuwangcj/discordgpt, 0.3.0)'},
+    headers:{Authorization:'Bot ' + token, 'Content-Type':'application/json', 'User-Agent':'DiscordBot (https://discord.com, v1.0)'},
     ...(body ? {body:JSON.stringify(body)} : {}),
   });
   if (response.status === 429 && attempt < 2) {
@@ -64,9 +64,9 @@ if (process.argv[2] === 'prepare') {
   const stateDir = path.join(root,'state');
   const store = new StateStore(stateDir); await store.load();
   for (const [key, record] of entries) await store.set(key.slice(3), record.thread_id);
-  // Dedicated management channel; trade notification configuration is untouched.
+  // Codex conversation channel; trade notification configuration is untouched.
   const parent = await api('/guilds/' + trade.guild_id + '/channels','POST', {
-    name:'codex', type:0, topic:'工作区助手：打开 wbot、创建话题、列出我的工作区和话题。', permission_overwrites:[
+    name:'codex', type:0, topic:'Codex 大模型聊天与工程开发；使用 !codex topic 创建工作区话题。', permission_overwrites:[
       {id:trade.guild_id, type:0, deny:'1024', allow:'0'},
       {id:users[0], type:1, allow:String(1024n | 2048n | 65536n | 32768n | 16384n | (1n<<38n)), deny:'0'},
       {id:me.id, type:1, allow:String(1024n | 2048n | 65536n | 32768n | (1n<<34n) | (1n<<36n) | (1n<<38n)), deny:'0'},
@@ -81,7 +81,7 @@ if (process.argv[2] === 'prepare') {
   const envFile = path.join(root,'discordgpt.env');
   const settings = {DISCORD_BOT_TOKEN:token,CODEX_PROJECT_DIR:workspace,DISCORD_ALLOWED_USER_IDS:users.join(','),
     DISCORD_ALLOWED_CHANNEL_IDS:dmId + ',' + parent.id,DISCORD_REQUIRE_MENTION:'false',DISCORD_PROGRESS_ENABLED:'false',
-    CODEX_BIN:path.join(home,'.local/bin/codex'),CODEX_MODEL:entries[0][1].model,CODEX_SANDBOX:'workspace-write',
+    CODEX_BIN:path.join(home,'.local/bin/codex'),CODEX_MODEL:entries[0][1].model,CODEX_SANDBOX:'danger-full-access',
     CODEX_APPROVAL_POLICY:'never',CODEX_WORKSPACES_FILE:workspaceFile,CODEX_DISCORD_STATE_DIR:stateDir};
   await save(envFile,Object.entries(settings).filter(([,v])=>v).map(([k,v])=>k+'='+JSON.stringify(v)).join('\n')+'\n');
   const unitFile = path.join(home,'.config/systemd/user',newUnit);
@@ -120,7 +120,7 @@ if (process.argv[2] === 'prepare') {
     }
     if(!ready)throw new Error('New Discord service did not become ready');
     m.status='completed';m.completedAt=new Date().toISOString();await save(manifestFile,JSON.stringify(m,null,2));
-    await notify(m,'discordgpt 已接管聊天，旧聊天服务已停止。私聊继续沿用原 Codex 上下文。\nwbot 工程话题：'+m.topicUrl+'\n进入话题直接聊天；主频道说“打开 wbot”即可找到入口。trade 推送不变。');
+    await notify(m,'discordgpt 已接管聊天，旧聊天服务已停止。私聊继续沿用原 Codex 上下文。\nwbot 工程话题：'+m.topicUrl+'\n进入话题直接聊天；主频道也可直接向 Codex 发送任务。trade 推送不变。');
     await api('/channels/'+m.topicId+'/messages','POST',{content:'discordgpt 接管完成。这里绑定 wbot 工程，使用独立 Codex 上下文，现在可以直接发送任务。',allowed_mentions:{parse:[]}});
     console.log('Handoff completed and notified');
   } catch(error) {
