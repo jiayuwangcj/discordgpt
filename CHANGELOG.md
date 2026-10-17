@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.7 — hot-load workspace topics — 2026-10-17
+
+- Load added host workspace aliases and private-topic bindings while other sessions run. Poll every second and refresh new topics before message authorization; no global idle gate, drain or restart is needed for configuration additions after this upgrade.
+- Provision existing private topics with `scripts/bind-workspace-topic.mjs`. Validate the actual Discord topic, allowed parent/user and immutable directory mapping; write separate host configuration atomically and confirm activation through health output. Never externally overwrite live `state.json`.
+- Persist bindings through the live StateStore while retaining threads, shared contexts and model settings. Reject conflicting or malformed updates as a whole, retain the last working configuration, and report reload failures in health and audit logs.
+- Explicitly reply when an authorized user messages an unbound topic instead of silently ignoring it; the message is not queued and must be resent after activation. Existing STOP/model/session controls keep their queue behavior.
+- Validation: 58 tests passed without skips, type/build and dependency audit passed, and a real app-server initialization/state-persistence smoke check passed.
+
 ## v0.4.6 — remove channel-name status — 2026-10-15
 
 - Withdraw quota-as-channel-name presentation and restore the existing parent name. Remove its configuration, background writer, updater utility and deploy opt-in; upgrades remove the retired instance setting.

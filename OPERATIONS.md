@@ -299,6 +299,39 @@ the complete suite and deployed v0.4.0; the prior socket/systemd restrictions
 applied only to the older Discord model session.
 
 
+## Hot-loading workspace topics
+
+From v0.4.7 onward, added aliases in `CODEX_WORKSPACES_FILE` load automatically.
+The bot checks once per second and before authorizing a new topic. Other windows
+can continue running; no global idle wait, drain or restart is involved. Existing
+workspace paths and topic bindings are immutable. A code upgrade from an older
+service still requires the guarded restart described below, once.
+
+To bind an already-created private Discord topic, run from the built repository:
+
+```bash
+node scripts/bind-workspace-topic.mjs TOPIC_ID WORKSPACE_ALIAS /absolute/project/path OWNER_USER_ID
+```
+
+The default instance directory is `~/.config/discordgpt`; override with
+`--root /absolute/instance/directory`. The utility validates the actual private
+topic and parent, host path, and allowed user. It preserves existing entries and
+atomically updates the workspace configuration and
+`CODEX_DISCORD_STATE_DIR/topic-bindings.json`. It waits up to 30 seconds for an
+activation acknowledgment in fresh health output. `--stage` writes configuration
+without claiming activation, for a first deployment onto an older service.
+
+The bindings file is an array of `{id, parentId, guildId, ownerId, name, workspace}`
+records. Treat it as trusted host configuration, keep it private, and use the
+utility rather than editing live `state.json`. Removing an entry does not delete
+or unbind existing conversations. Changing an existing path requires a new alias
+and topic. Invalid batches retain the last working configuration; inspect
+`health.json.workspaceReload.error` and `workspace.reload.failed` in the audit log.
+Successful health output lists the applied topic IDs in `workspaceReload.topics`.
+
+An unbound topic explicitly reports that messages were not queued. After the
+binding is active, resend those messages; they are never automatically replayed.
+
 ## Updating from a Discord model task
 
 A model task cannot synchronously drain and stop the service running that same

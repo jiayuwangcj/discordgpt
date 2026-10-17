@@ -59,21 +59,23 @@ export class CodexAppServer extends EventEmitter {
   }
 }
 `);
-  await fs.writeFile(fakeConfig, `export const config=${JSON.stringify({ token: "test-token", projectDir: dir, stateDir: path.join(dir, "state"), sandbox: "workspace-write", approvalPolicy: "never", codexBin: "unused", requireMention: true, progressEnabled: false })};config.allowedUsers=new Set(['owner']);config.allowedChannels=new Set(['parent']);`);
+  const workspacesFile = path.join(dir, "workspaces.json");
+  await fs.writeFile(workspacesFile, "{}");
+  await fs.writeFile(fakeConfig, `export const config=${JSON.stringify({ token: "test-token", projectDir: dir, workspacesFile, stateDir: path.join(dir, "state"), sandbox: "workspace-write", approvalPolicy: "never", codexBin: "unused", requireMention: true, progressEnabled: false })};config.allowedUsers=new Set(['owner','1']);config.allowedChannels=new Set(['parent','2']);`);
   let source = await fs.readFile("dist/index.js", "utf8");
   source = source.replace(/from "\.\/([^"\n]+)"/g, (_, name) => `from ${JSON.stringify(pathToFileURL(path.resolve("dist", name)).href)}`);
   source = source.replace('from "discord.js"', `from ${JSON.stringify(pathToFileURL(fakeDiscord).href)}`)
     .replace(`from ${JSON.stringify(pathToFileURL(path.resolve("dist/config.js")).href)}`, `from ${JSON.stringify(pathToFileURL(fakeConfig).href)}`)
     .replace(`from ${JSON.stringify(pathToFileURL(path.resolve("dist/codex-app-server.js")).href)}`, `from ${JSON.stringify(pathToFileURL(fakeCodex).href)}`);
   // Expose test cleanup only; execute the compiled production routing unchanged.
-  source += "\nexport {queues,state,catalog,presencePublisher};export function stopTestTimers(){presencePublisher.stop();for(const timer of [refreshTimer,healthTimer,presenceTimer])if(timer)clearInterval(timer);}\n";
+  source += "\nexport {queues,state,catalog,presencePublisher};export function stopTestTimers(){presencePublisher.stop();for(const timer of [refreshTimer,healthTimer,presenceTimer,workspaceTimer])if(timer)clearInterval(timer);}\n";
   const main = path.join(dir, "main.mjs"); await fs.writeFile(main, source);
   let runtime;
   let id = 0;
   const channel = (channelId, guild = false) => ({ id: channelId, type: guild ? 0 : 1, isThread: () => false, sendTyping: async () => { if (h.failTyping) throw Error("typing unavailable"); } });
   const emit = (content, channelId = "dm", guild = false, userId = "owner") => {
     const message = { id: String(++id), channelId, guildId: guild ? "guild" : null, guild: guild ? {} : null,
-      channel: channel(channelId, guild), author: { id: userId, bot: false }, content, attachments: new Map(), mentions: { has: () => true },
+      channel: channelId === "123" ? { ...channel(channelId, guild), isThread: () => true, parentId: "2" } : channel(channelId, guild), author: { id: userId, bot: false }, content, attachments: new Map(), mentions: { has: () => channelId !== "123" },
       reply: async (value) => {
         const payload = typeof value === "string" ? { content: value } : value;
         if (h.failReply && payload.content.startsWith("answer:")) { h.failReply = false; throw Error("HTTP 429"); }
@@ -102,7 +104,7 @@ export class CodexAppServer extends EventEmitter {
   try {
     runtime = await import(pathToFileURL(main).href);
     await until(() => h.commands.length === 17 && !runtime.catalog.stale);
-    assert.equal(h.notices.filter((n) => n.body.content?.includes("已上线")).length, 1);
+    assert.equal(h.notices.filter((n) => n.body.content?.includes("已上线")).length, 2);
     emit("forbidden", "dm", false, "intruder");
     emit("列出我的工作区和话题", "parent", true);
     const dmManagement = emit("DM management task");
@@ -255,6 +257,27 @@ export class CodexAppServer extends EventEmitter {
     assert.ok(h.presences.length > beforeReconnect);
     assert.match(h.presences.at(-1).activities[0].name,/限额：5h-75%/);
     assert.notEqual(h.presences.at(-1).activities[0].name,"Codex");
+    // First message must load a host-provisioned topic before authorization,
+    // even while another workspace holds an active Codex turn.
+    h.hold = true; emit("busy while adding workspace", "busy-dm");
+    await until(() => h.turns.at(-1).input[0].text === "busy while adding workspace");
+    const releaseBusy = h.release;
+    const busyThread = runtime.state.get("busy-dm");
+    const newCwd = path.join(dir, "new-workspace"); await fs.mkdir(newCwd);
+    const beforeUnbound = h.turns.length;
+    emit("not yet bound", "123", true);
+    await until(() => h.replies.some(r => r.channelId === "123" && r.content.includes("未进入执行队列")));
+    assert.equal(h.turns.length, beforeUnbound);
+    await fs.writeFile(workspacesFile, JSON.stringify({ wrt: newCwd }));
+    await fs.writeFile(path.join(dir, "state/topic-bindings.json"), JSON.stringify([
+      { id: "123", parentId: "2", guildId: "3", ownerId: "1", name: "wrt", workspace: "wrt" },
+    ]));
+    h.hold = false; emit("first new topic task", "123", true);
+    await until(() => h.turns.at(-1).input[0].text === "first new topic task");
+    assert.equal(h.turns.at(-1).cwd, newCwd);
+    assert.notEqual(h.turns.at(-1).threadId, busyThread);
+    assert.ok(runtime.queues.list().some(t => t.channelId === "busy-dm" && t.phase === "running"));
+    releaseBusy(); await until(() => runtime.queues.list().length === 0);
   } finally {
     h.releaseModelAck?.();
     runtime?.stopTestTimers();

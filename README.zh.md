@@ -4,7 +4,7 @@
 
 本项目已从 `wbot` 独立：不包含交易、行情、数据库或正式推送频道逻辑。迁移范围和后续工作见 [MIGRATION.md](MIGRATION.md)，开源方案比较与来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
-当前代码和已部署服务版本均为 **v0.4.6**，撤回用频道名显示限额的方案，保留话题内的模型和状态卡。父频道名称已恢复，自动改名配置已关闭。原会话绑定保留，线上权限为 `danger-full-access / never`。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前代码版本为 **v0.4.7**，新增工作区和已有话题绑定可热加载，无需等待其他会话空闲。线上版本以 systemd 工作目录及发布记录为准。已撤回用频道名显示限额的方案，模型、限额和工作状态保留在话题内的任务卡。原会话绑定保留，线上权限为 `danger-full-access / never`。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 默认只在任务完成后统一回复。`DISCORD_PROGRESS_ENABLED=true` 可打开工具执行前的进度消息。停止和状态指令立即执行，不会排在长任务后面；同频道任务串行，不同频道可并行，显式绑定同一 shared thread 的频道共用队列。
 
@@ -51,7 +51,7 @@
 }
 ```
 
-配置 `CODEX_WORKSPACES_FILE` 指向该文件。`default` 始终对应 `CODEX_PROJECT_DIR`，新增工作区配置后重启服务。聊天端不能指定任意目录。
+配置 `CODEX_WORKSPACES_FILE` 指向该文件。`default` 始终对应 `CODEX_PROJECT_DIR`，新增工作区自动热加载，无需等待其他任务结束或重启服务。聊天端不能指定任意目录。
 
 在允许的服务器文字频道中发送：
 
@@ -65,7 +65,7 @@
 
 机器人在父频道需要 View Channel、Send Messages、Read Message History、Create Private Threads、Send Messages in Threads、Manage Threads；不需要 Administrator。私人话题仍可被具有 Manage Threads 权限的服务器成员查看，不等同于端到端隐私。若设置频道白名单，已绑定话题继承父频道的允许状态，私聊不受频道白名单限制，仍校验用户白名单。
 
-私聊保持原有默认工作目录和独立上下文；只有显式绑定同一个 Codex 会话才会共享上下文。`CODEX_SHARED_THREAD_ID` 为未绑定工作区的窗口提供默认共享会话，显式 `/bind` 优先。手工创建且未绑定的 Discord 话题不会执行任务，请使用创建指令。上下文隔离不是文件系统隔离：同工作区话题仍能访问相同工程文件，多个修改任务应使用独立 worktree。
+私聊保持原有默认工作目录和独立上下文；只有显式绑定同一个 Codex 会话才会共享上下文。`CODEX_SHARED_THREAD_ID` 为未绑定工作区的窗口提供默认共享会话，显式 `/bind` 优先。已有私人话题可通过 `scripts/bind-workspace-topic.mjs` 热加载绑定，操作见 [OPERATIONS.md](OPERATIONS.md#hot-loading-workspace-topics)。未绑定话题会明确提示消息未入队，绑定启用后需要重新发送。上下文隔离不是文件系统隔离：同工作区话题仍能访问相同工程文件，多个修改任务应使用独立 worktree。
 
 ## 继续已有 Codex 会话
 

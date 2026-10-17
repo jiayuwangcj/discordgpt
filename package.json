@@ -1,6 +1,6 @@
 {
   "name": "discordgpt",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "license": "MIT",
   "type": "module",
   "description": "Control persistent OpenAI Codex sessions from Discord.",
@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node test/run.mjs",
-    "verify": "npm run check && node --check scripts/deploy-wbot-handoff.mjs && node --check scripts/verify-workspace-live.mjs && node --check scripts/upgrade-service.mjs && npm test && npm audit --audit-level=high",
+    "verify": "npm run check && node --check scripts/deploy-wbot-handoff.mjs && node --check scripts/verify-workspace-live.mjs && node --check scripts/upgrade-service.mjs && node --check scripts/bind-workspace-topic.mjs && npm test && npm audit --audit-level=high",
     "smoke": "npm run build && node dist/smoke.js",
     "start": "node --enable-source-maps dist/index.js",
     "dev": "tsx src/index.ts",

@@ -26,6 +26,7 @@ import type { Server } from "node:http";
 import { applicationCommands, controlHelp } from "./commands.js";
 import { sessionChoices, sessionList } from "./sessions.js";
 import { loadWorkspaces } from "./workspaces.js";
+import { WorkspaceReloader } from "./workspace-reload.js";
 import { resolveWorkspace, topicRequest } from "./topic-routing.js";
 import { initialPresence, presenceContext, presenceLabel, slurmTimeLeft, PresencePublisher } from "./presence.js";
 
@@ -71,6 +72,11 @@ const statusCards = new Map<string, StatusCardEntry>();
 const messagesSeen = new RecentRequests();
 const interactionsSeen = new RecentRequests();
 let workspaces: Record<string, string> = { default: config.projectDir };
+const workspaceReloader = new WorkspaceReloader(config, state, logEvent);
+async function refreshWorkspaces() {
+  await workspaceReloader.refresh();
+  workspaces = workspaceReloader.current;
+}
 const active = new Map<string, { threadId: string; turnId: string; model?: string; effort?: string }>();
 class UserVisibleError extends Error {}
 let bindingInProgress = false;
@@ -238,7 +244,7 @@ async function command(message: ControlContext, prompt: string): Promise<boolean
     const metadata = codex.threadMetadata(threadId);
     const instructionFiles = (await Promise.all(["AGENTS.md", "CLAUDE.md"].map(async (name) =>
       await fs.access(`${workspace.cwd}/${name}`).then(() => name, () => "")))).filter(Boolean);
-    await sendLong(message, ["✅ discordgpt v0.4.6 服务正常", `Workspace: ${workspace.workspace}`, `Path: ${workspace.cwd}`,
+    await sendLong(message, ["✅ discordgpt v0.4.7 服务正常", `Workspace: ${workspace.workspace}`, `Path: ${workspace.cwd}`,
       codex.userAgent ? `Codex：${codex.userAgent.slice(0, 160)}` : "Codex：版本信息暂不可用",
       `提供方：${metadata?.modelProvider ?? "app-server 配置"}`, `项目说明：${instructionFiles.join("、") || "当前目录没有 AGENTS.md/CLAUDE.md"}`,
       `已知会话：${state.threadCount()}`, metadata?.name ? `线程名：${metadata.name}` : "",
@@ -393,7 +399,19 @@ async function handle(message: Message, retry = false, signal?: AbortSignal, onN
 }
 
 client.on("messageCreate", async (message) => {
-  if (message.author.bot || !allowed(message) || !messagesSeen.claim(message.id)) return;
+  if (message.author.bot || !config.allowedUsers.has(message.author.id)) return;
+  if (message.channel.isThread() && !state.binding(message.channelId)
+    || /^!codex\s+(?:topic|workspaces)(?:\s|$)/i.test(cleanPrompt(message))) await refreshWorkspaces();
+  if (message.channel.isThread() && !state.binding(message.channelId) && message.channel.parentId
+    && (!config.allowedChannels.size || config.allowedChannels.has(message.channel.parentId))) {
+    // An in-flight poll may have started before the operator's atomic rename.
+    await refreshWorkspaces();
+    if (!state.binding(message.channelId)) {
+      if (messagesSeen.claim(message.id)) await message.reply("此话题尚未完成工作区绑定，消息未进入执行队列；请在绑定启用后重新发送。").catch(() => undefined);
+      return;
+    }
+  }
+  if (!allowed(message) || !messagesSeen.claim(message.id)) return;
   try {
     // Controls must bypass the queue so STOP can interrupt a running turn.
     const prompt = cleanPrompt(message);
@@ -457,6 +475,8 @@ client.on("messageCreate", async (message) => {
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isAutocomplete()) return;
+  if (config.allowedUsers.has(interaction.user.id) && (interaction.channel?.isThread() && !state.binding(interaction.channelId)
+    || interaction.isChatInputCommand() && ["topic", "workspaces"].includes(interaction.commandName))) await refreshWorkspaces();
   const channel = interaction.channel;
   if (!channel || !authorized(channel as Message["channel"], interaction.channelId, interaction.guildId, interaction.user.id)) {
     if (interaction.isAutocomplete()) await interaction.respond([]).catch(() => undefined);
@@ -528,6 +548,7 @@ client.on("interactionCreate", async (interaction) => {
 let refreshTimer: NodeJS.Timeout | undefined;
 let healthTimer: NodeJS.Timeout | undefined;
 let presenceTimer: NodeJS.Timeout | undefined;
+let workspaceTimer: NodeJS.Timeout | undefined;
 let refreshing = false;
 let commandsReady = false;
 let interactionServer: Server | undefined;
@@ -569,6 +590,7 @@ async function writeHealth() {
   const data = JSON.stringify({ pid: process.pid, at: new Date().toISOString(), ready: client.isReady(), draining: queues.draining,
     active: queues.list().filter((t) => t.phase === "running").length, outstanding: queues.list().length,
     release: process.cwd(), commandsReady, modelsStale: catalog.stale, usageStale: usage.stale,
+    workspaceReload: workspaceReloader.status,
     presence: presencePublisher.lastPublished });
   await fs.writeFile(file + ".tmp", data, { mode: 0o600 });
   await fs.rename(file + ".tmp", file);
@@ -584,6 +606,7 @@ client.once("clientReady", () => {
   refreshTimer = setInterval(() => void refreshMetadata(), 5 * 60_000); refreshTimer.unref();
   void writeHealth().catch(() => console.error("Health write failed"));
   healthTimer = setInterval(() => void writeHealth().catch(() => console.error("Health write failed")), 1000); healthTimer.unref();
+  workspaceTimer = setInterval(() => void refreshWorkspaces(), 1000); workspaceTimer.unref();
   // Upsert only our commands; unrelated trading commands are preserved.
   if (client.application) void (async () => {
     for (const definition of applicationCommands()) await client.application!.commands.create(definition);
@@ -602,6 +625,8 @@ try {
   if (!(await fs.stat(config.projectDir)).isDirectory()) throw new Error("CODEX_PROJECT_DIR is not a directory");
   workspaces = await loadWorkspaces(config.projectDir, config.workspacesFile);
   await state.load();
+  workspaceReloader.current = workspaces;
+  await refreshWorkspaces();
   queues.draining = await fs.access(`${config.stateDir}/drain`).then(() => true, () => false);
   await lifecycle.notify("discordgpt 正在启动或重启，连接完成后另行通知。");
   await codex.start();
@@ -660,7 +685,7 @@ async function shutdown(code: number, reason: string) {
   if (shuttingDown) return;
   shuttingDown = true; queues.accepting = false;
   presencePublisher.stop();
-  for (const timer of [refreshTimer, healthTimer, presenceTimer]) if (timer) clearInterval(timer);
+  for (const timer of [refreshTimer, healthTimer, presenceTimer, workspaceTimer]) if (timer) clearInterval(timer);
   const deadline = setTimeout(() => process.exit(code), 15000); deadline.unref();
   logEvent("service.stopping", { count: queues.list().length });
   await lifecycle.notify(reason);

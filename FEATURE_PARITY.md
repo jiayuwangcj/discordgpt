@@ -9,6 +9,7 @@ repository. Runtime imports do not depend on wbot.
 | --- | --- | --- |
 | Authorized DMs and persistent thread | DMs bypass the guild channel list; user authorization still applies | Offline bot wiring, state reload, runtime DM test |
 | Native workspace topics | Independent directory and Codex context; parent allowlist inherited | Topics/state tests, runtime topic test |
+| Topic activation (v0.4.7 fix) | Hot-load added host aliases and existing private-topic bindings while other turns run; explicit unbound-topic feedback, no global idle/restart gate | Concurrent live-state reload, malformed/conflicting config, persistence failure, provisioning utility and busy-window routing regressions |
 | Main management channel | Rule parser removed; normal tasks/history go to Codex | Offline bot wiring, runtime guild test |
 | Starting, first READY, normal/abnormal exit notifications | Authorized-user DMs through REST; reconnect does not repeat READY | Lifecycle notifier tests |
 | `/model` + effort | Live paginated catalog; autocomplete and exact/unique aliases; model-specific validation | Catalog, protocol and offline bot tests |

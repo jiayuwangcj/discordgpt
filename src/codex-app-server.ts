@@ -62,7 +62,7 @@ export class CodexAppServer extends EventEmitter {
     else this.startStdio();
 
     const initialization = await this.request("initialize", {
-      clientInfo: { name: "discordgpt", title: "Discord Codex Bridge", version: "0.4.6" },
+      clientInfo: { name: "discordgpt", title: "Discord Codex Bridge", version: "0.4.7" },
     });
     this.userAgent = typeof initialization.userAgent === "string" ? initialization.userAgent : "";
     this.notify("initialized", {});

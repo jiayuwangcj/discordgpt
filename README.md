@@ -10,7 +10,7 @@ trading, market-data, database, or notification-channel logic. It uses
 
 See [README.zh.md](README.zh.md) for setup, security guidance, commands, multi-instance usage, and current limitations.
 
-Release: **v0.4.6**. Node.js 20+ and an authenticated Codex CLI are required.
+Release: **v0.4.7**. Node.js 20+ and an authenticated Codex CLI are required.
 
 Quick start:
 
@@ -28,7 +28,10 @@ New and resumed/bound Codex threads default to YOLO: `danger-full-access` and
 or `read-only`. Discord user allowlists and guild mention settings still apply.
 
 Configure `CODEX_WORKSPACES_FILE` as a host-side JSON object of aliases to absolute
-existing directories. In a server text channel, send
+existing directories. Added aliases are hot-loaded without restarting or waiting
+for other sessions. Existing private topics can be provisioned with
+`scripts/bind-workspace-topic.mjs`; see [OPERATIONS.md](OPERATIONS.md#hot-loading-workspace-topics).
+In a server text channel, send
 `@bot !codex topic <workspace-alias> [topic-name]`. The bot creates a private
 Discord thread, binds its workspace, and adds the requester. Talk directly in
 that thread without mentions. Topics and DMs have independent contexts by default;

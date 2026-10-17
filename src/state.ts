@@ -97,6 +97,39 @@ export class StateStore {
     await this.save();
   }
 
+  /** Add host-provisioned topics without reloading or replacing live conversation state. */
+  async registerTopics(topics: ManagedTopic[], workspaces: Record<string, string>): Promise<boolean> {
+    const additions = topics.filter((topic) => !this.data.managedTopics?.[topic.id] || !this.binding(topic.id));
+    for (const topic of topics) {
+      const binding = this.binding(topic.id);
+      const previous = this.data.managedTopics?.[topic.id];
+      if (!Object.hasOwn(workspaces, topic.workspace)
+        || binding && (binding.workspace !== topic.workspace || binding.cwd !== workspaces[topic.workspace])
+        || previous && (Object.keys(topic) as (keyof ManagedTopic)[]).some((key) => previous[key] !== topic[key])) {
+        throw new Error("Conflicting topic binding; existing topics are immutable");
+      }
+    }
+    if (!additions.length) return false;
+    this.data.workspaces ??= {};
+    this.data.managedTopics ??= {};
+    const previous = additions.map((topic) => ({ id: topic.id, binding: this.data.workspaces![topic.id], topic: this.data.managedTopics![topic.id] }));
+    for (const topic of additions) {
+      this.data.workspaces[topic.id] = { workspace: topic.workspace, cwd: workspaces[topic.workspace] };
+      this.data.managedTopics[topic.id] = { ...topic };
+    }
+    try { await this.save(); }
+    catch (error) {
+      for (const value of previous) {
+        if (value.binding) this.data.workspaces[value.id] = value.binding;
+        else delete this.data.workspaces[value.id];
+        if (value.topic) this.data.managedTopics[value.id] = value.topic;
+        else delete this.data.managedTopics[value.id];
+      }
+      throw error;
+    }
+    return true;
+  }
+
   async bindWorkspace(channelId: string, workspace: string, cwd: string): Promise<void> {
     const existing = this.binding(channelId);
     if (existing && (existing.workspace !== workspace || existing.cwd !== cwd)) throw new Error("Workspace binding is immutable; create a new Discord topic");
