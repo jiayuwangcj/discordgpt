@@ -1,6 +1,20 @@
 export const SYSTEM_PREFIX = "【系统消息】";
 export function systemMessage(text: string): string { return `${SYSTEM_PREFIX} ${text}`; }
 
+/** Discord typing expires quickly; renew it for the lifetime of model work. */
+export function startTyping(send: () => Promise<unknown>, intervalMs = 7000): () => void {
+  let stopped = false;
+  let sending = false;
+  const tick = () => {
+    if (stopped || sending) return;
+    sending = true;
+    void Promise.resolve().then(send).catch(() => undefined).finally(() => { sending = false; });
+  };
+  tick();
+  const timer = setInterval(tick, intervalMs); timer.unref();
+  return () => { stopped = true; clearInterval(timer); };
+}
+
 export class LifecycleNotifier {
   private readySent = false;
   constructor(private users: Set<string>, private send: (userId: string, text: string) => Promise<void>,

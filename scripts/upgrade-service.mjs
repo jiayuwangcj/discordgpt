@@ -53,6 +53,8 @@ if (mode === 'pack') {
   if (manifest.digest !== await digest(candidate)) throw Error('Build changed candidate contents; repack the verified candidate');
   const originalEnv = await fs.readFile(envFile, 'utf8');
   const settings = dotenv.parse(originalEnv);
+  // Retire the channel-renaming experiment when upgrading an existing instance.
+  delete settings.DISCORD_QUOTA_HEADER_CHANNEL_IDS;
   // Explicit operator choice updates a previously configured restricted instance.
   // Without this flag, existing instance settings still override code defaults.
   if (process.argv.includes('--yolo')) {

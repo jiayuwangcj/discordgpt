@@ -59,7 +59,8 @@ export class UsageMonitor {
       if (!bucket) continue;
       const windows = [bucket.primary, bucket.secondary].filter((w): w is UsageWindow => !!w);
       const parts = windows.map((w) => `${label(w)}-${remaining(w) ?? "未知"}%`);
-      lines.push(`${id}: ${parts.join(" ") || "暂不可用"}${bucket.rateLimitReachedType ? "（限额已达）" : ""}`);
+      const prefix = compact && id.toLowerCase() === "codex" ? "" : `${id}: `;
+      lines.push(`${prefix}${parts.join(" ") || "暂不可用"}${bucket.rateLimitReachedType ? "（限额已达）" : ""}`);
       if (!compact) for (const w of windows) if (Number.isFinite(w.resetsAt)) {
         lines.push(`${id} ${label(w)} 重置：${new Date(w.resetsAt! * 1000).toISOString()}`);
       }

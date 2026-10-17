@@ -14,7 +14,7 @@ async function until(predicate) {
 test("offline bot wiring: DM authorization, LLM parent routing, isolated models, slash status, FIFO stop and quota resume", { timeout: 12000 }, async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "discordgpt-bot-test-"));
   const previousSignals = Object.fromEntries(["SIGINT", "SIGTERM"].map((signal) => [signal, new Set(process.listeners(signal))]));
-  const h = { replies: [], calls: [], notices: [], commands: [], turns: [], hold: false, quota: false };
+  const h = { replies: [], edits: [], presences: [], calls: [], notices: [], commands: [], turns: [], hold: false, quota: false };
   globalThis.__discordgptRuntimeTest = h;
   const fakeDiscord = path.join(dir, "discord.mjs");
   const fakeCodex = path.join(dir, "codex.mjs");
@@ -25,7 +25,7 @@ import {EventEmitter} from 'node:events';
 export * from ${JSON.stringify(actualDiscord)};
 export class Client extends EventEmitter {
   constructor() { super(); const h=globalThis.__discordgptRuntimeTest; h.client=this;
-    this.user={id:'bot',tag:'testbot',setPresence(){}};
+    this.user={id:'bot',tag:'testbot',setPresence(data){h.presences.push(data);}};
     this.rest={setToken(){},post:async(route,{body})=>{h.notices.push({route,body});return {id:'dm'};}};
     this.application={commands:{create:async(data)=>{h.commands.push(data);return data;}}};
   }
@@ -66,11 +66,11 @@ export class CodexAppServer extends EventEmitter {
     .replace(`from ${JSON.stringify(pathToFileURL(path.resolve("dist/config.js")).href)}`, `from ${JSON.stringify(pathToFileURL(fakeConfig).href)}`)
     .replace(`from ${JSON.stringify(pathToFileURL(path.resolve("dist/codex-app-server.js")).href)}`, `from ${JSON.stringify(pathToFileURL(fakeCodex).href)}`);
   // Expose test cleanup only; execute the compiled production routing unchanged.
-  source += "\nexport {queues,state,catalog};export function stopTestTimers(){for(const timer of [refreshTimer,healthTimer,presenceTimer])if(timer)clearInterval(timer);}\n";
+  source += "\nexport {queues,state,catalog,presencePublisher};export function stopTestTimers(){presencePublisher.stop();for(const timer of [refreshTimer,healthTimer,presenceTimer])if(timer)clearInterval(timer);}\n";
   const main = path.join(dir, "main.mjs"); await fs.writeFile(main, source);
   let runtime;
   let id = 0;
-  const channel = (channelId, guild = false) => ({ id: channelId, type: guild ? 0 : 1, isThread: () => false, sendTyping: async () => {} });
+  const channel = (channelId, guild = false) => ({ id: channelId, type: guild ? 0 : 1, isThread: () => false, sendTyping: async () => { if (h.failTyping) throw Error("typing unavailable"); } });
   const emit = (content, channelId = "dm", guild = false, userId = "owner") => {
     const message = { id: String(++id), channelId, guildId: guild ? "guild" : null, guild: guild ? {} : null,
       channel: channel(channelId, guild), author: { id: userId, bot: false }, content, attachments: new Map(), mentions: { has: () => true },
@@ -78,7 +78,7 @@ export class CodexAppServer extends EventEmitter {
         const payload = typeof value === "string" ? { content: value } : value;
         if (h.failReply && payload.content.startsWith("answer:")) { h.failReply = false; throw Error("HTTP 429"); }
         h.replies.push({ channelId, ...payload });
-        return { id: "card-"+id, edit: async () => {} };
+        return { id: "card-"+id, edit: async value => { h.edits.push({ channelId, ...value }); } };
       } };
     h.client.emit("messageCreate", message); return message;
   };
@@ -88,7 +88,13 @@ export class CodexAppServer extends EventEmitter {
       isChatInputCommand: () => true, isButton: () => false, isAutocomplete: () => false,
       options: { getString: (key) => options[key] ?? null }, replied: false,
       deferReply: async () => {}, reply: async (value) => replies.push(value),
-      editReply: async (value) => { interaction.replied = true; replies.push(typeof value === "string" ? { content: value } : value); },
+      editReply: async (value) => {
+        if (name === "model" && !interaction.replied) {
+          if (h.modelReplyGate) { h.modelReplyWaiting = true; await h.modelReplyGate; }
+          if (h.modelTLS) { h.modelTLS--; throw Object.assign(Error("TLS reply failed"), { code: "ERR_SSL_PACKET_LENGTH_TOO_LONG" }); }
+        }
+        interaction.replied = true; replies.push(typeof value === "string" ? { content: value } : value);
+      },
       followUp: async (value) => replies.push(value),
     };
     h.client.emit("interactionCreate", interaction); return replies;
@@ -112,6 +118,8 @@ export class CodexAppServer extends EventEmitter {
     await until(() => h.turns.length === 4 && runtime.queues.list().length === 0);
     assert.equal(h.turns.find((t) => t.input[0].text === "next DM").settings.model, "test-two");
     assert.equal(h.turns.find((t) => t.input[0].text === "next parent").settings, undefined);
+    assert.ok(h.edits.some(e=>e.channelId==="dm"&&e.content.includes("模型：test-two · high")));
+    assert.ok(!h.edits.some(e=>e.channelId==="parent"&&e.content.includes("模型：test-two")));
     const invalid = slash("model", { model: "test-two", effort: "ultra" });
     await until(() => invalid.length > 0); assert.match(invalid[0].content, /原设置保留/);
     const status = slash("status"); await until(() => status.length > 0);
@@ -119,6 +127,7 @@ export class CodexAppServer extends EventEmitter {
     const unauthorized = slash("status", {}, "dm", "intruder"); await until(() => unauthorized.length > 0);
     assert.match(unauthorized[0].content, /未授权/);
     h.hold = true; emit("long task"); await until(() => h.turns.length === 5);
+    await until(() => h.replies.some(r => r.channelId === "dm" && r.content.includes("工作中")));
     emit("cancelled task"); await until(() => runtime.queues.list().length === 2);
     const cancel = slash("cancel"); await until(() => cancel.length > 0);
     assert.match(cancel[0].content, /已取消/);
@@ -127,6 +136,7 @@ export class CodexAppServer extends EventEmitter {
     const stop = slash("stop"); await until(() => stop.length > 0 && runtime.queues.list().length === 0);
     assert.ok(h.calls.some((c) => c.method === "interrupt"));
     assert.ok(!h.turns.some((t) => t.input[0].text === "cancelled task"));
+    assert.ok(h.edits.some(e => e.content.includes("已停止或取消") && e.components?.length === 0));
     h.hold = false; h.quota = true; emit("quota task");
     await until(() => runtime.queues.list()[0]?.phase === "paused");
     assert.ok(h.replies.some((r) => r.content.includes("额度不足")));
@@ -142,6 +152,12 @@ export class CodexAppServer extends EventEmitter {
     await until(() => runtime.queues.list().length === 0 && h.replies.length > noticeCount);
     assert.equal(h.turns.filter((t) => t.input[0].text === "delivery failure task").length, 1);
     assert.ok(!h.replies.slice(noticeCount).some((r) => r.content.includes("额度不足")));
+    h.failTyping = true;
+    const typingFailureTurns = h.turns.length;
+    emit("typing failure must not fail work");
+    await until(() => h.turns.length === typingFailureTurns + 1 && runtime.queues.list().length === 0);
+    h.failTyping = false;
+    assert.equal(h.turns.at(-1).input[0].text, "typing failure must not fail work");
 
     const saved = "019abcde-1234-7000-8000-123456789abc";
     const foreign = "019abcde-1234-7000-8000-123456789abd";
@@ -217,7 +233,30 @@ export class CodexAppServer extends EventEmitter {
     emit("!codex sessions", "parent", true); await until(() => h.replies.length > publicReplies);
     assert.match(h.replies.at(-1).content, /仅你可见/);
     assert.ok(!h.replies.at(-1).content.includes("之前讨论的开发方案"));
+    h.hold = true; emit("控制回执故障期间的任务");
+    await until(() => h.turns.at(-1).input[0].text === "控制回执故障期间的任务");
+    h.modelReplyGate = new Promise(resolve => { h.releaseModelAck = resolve; }); h.modelTLS = 1;
+    const delayedModel = slash("model", { model: "test-two", effort: "high" });
+    await until(() => h.modelReplyWaiting);
+    assert.equal(runtime.state.settings("thread:"+saved).model,"test-two");
+    assert.equal(delayedModel.length,0);
+    const stopDuringReply = slash("stop");
+    await until(() => stopDuringReply.length > 0 && runtime.queues.list().length === 0);
+    assert.match(stopDuringReply[0].content,/Stop requested/);
+    h.hold = false; h.modelReplyGate = undefined; h.releaseModelAck();
+    await until(() => delayedModel.length > 0);
+    assert.match(delayedModel[0].content,/已保存下一轮模型/);
+    assert.equal(runtime.state.settings("thread:"+saved).model,"test-two");
+    const beforeReconnect = h.presences.length;
+    h.client.emit("shardReady",0);
+    h.client.emit("shardResume",0,5);
+    // The real publisher shares its five-second throttle with task changes.
+    await sleep(5100);
+    assert.ok(h.presences.length > beforeReconnect);
+    assert.match(h.presences.at(-1).activities[0].name,/限额：5h-75%/);
+    assert.notEqual(h.presences.at(-1).activities[0].name,"Codex");
   } finally {
+    h.releaseModelAck?.();
     runtime?.stopTestTimers();
     for (const signal of ["SIGINT", "SIGTERM"]) for (const listener of process.listeners(signal)) if (!previousSignals[signal].has(listener)) process.removeListener(signal, listener);
     delete globalThis.__discordgptRuntimeTest;

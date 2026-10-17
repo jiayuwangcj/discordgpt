@@ -10,7 +10,7 @@ trading, market-data, database, or notification-channel logic. It uses
 
 See [README.zh.md](README.zh.md) for setup, security guidance, commands, multi-instance usage, and current limitations.
 
-Release: **v0.4.0**. Node.js 20+ and an authenticated Codex CLI are required.
+Release: **v0.4.6**. Node.js 20+ and an authenticated Codex CLI are required.
 
 Quick start:
 
@@ -63,6 +63,13 @@ the bot in server text channels unless mentions are disabled. Use `!codex status
 `!codex history 20 summarize decisions`. Status and stop execute immediately
 even while a model task is running. Replies are delivered on completion;
 `DISCORD_PROGRESS_ENABLED=true` enables commentary before tool calls.
+Each task has a card in its own window showing queued, working, paused and
+terminal states. Discord typing is renewed while work runs, even with commentary
+disabled. Status delivery failures do not cancel inference.
+Cards show that request's model/effort and shared quota. Mobile thread subtitles
+are Discord's built-in parent channel names, independently of bot Presence.
+The bridge does not rename channels to display status. Use task cards and
+`/status` or `/usage` for window/account details.
 
 ```bash
 npm run verify  # type check, automated tests, dependency audit

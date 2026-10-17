@@ -88,8 +88,8 @@ test("Slurm presence formats time and falls back outside Slurm", () => {
     SLURM_JOB_ID: "12345",
   });
   assert.deepEqual(context, { node: "node177", project: "my-project", slurmJobId: "12345" });
-  assert.equal(presenceLabel(context, "6d19h"), "node177 · ⏳6d19h · my-project");
-  assert.equal(presenceLabel({ node: "login05", project: "demo", slurmJobId: "" }), "login05 · demo");
+  assert.equal(presenceLabel(context, "6d19h"), "⏳6d19h");
+  assert.equal(presenceLabel({ node: "login05", project: "demo", slurmJobId: "" }), "");
 });
 
 transportTest("shared WebSocket transport initializes and streams a turn", async () => {

@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.4.6 — remove channel-name status — 2026-10-15
+
+- Withdraw quota-as-channel-name presentation and restore the existing parent name. Remove its configuration, background writer, updater utility and deploy opt-in; upgrades remove the retired instance setting.
+- Keep model/effort, quota and work status in each task card and `/status`/`/usage`. Discord's built-in parent subtitle is not a bot-controlled status widget.
+- Preserve the two existing threads and their chat histories; no parent/thread deletion or conversation rebinding is performed as part of removing this presentation feature.
+- Validation: all 55 remaining tests pass without skips, type/build and dependency audit pass. The actual parent name was restored and GET-verified; the retired setting was removed from the instance environment before guarded rollout.
+
+## v0.4.5 — mobile topic header quota — 2026-10-15
+
+This channel-name experiment was withdrawn in v0.4.6 after user feedback. Per-task model details remain.
+
+- The mobile thread-header subtitle is its parent channel name, not bot Presence. Add explicit opt-in quota parent names (for example `限额-5h49％-w85％`) so this actual UI field shows shared account quota.
+- Persist the original name, last name and rename cooldown before modifying Discord. Update at most once per ten minutes, coalesce concurrent refreshes, skip stale quota, and preserve unexpected operator name changes. Only configured, managed text parents can be targeted; no permission grants or channel recreation.
+- Show each request's own model/effort and shared quota in its task card. Pin running-task model metadata when its native turn starts; future setting changes update pending cards without relabelling a running task.
+- Add `DISCORD_QUOTA_HEADER_CHANNEL_IDS`, guarded deploy option `--quota-header-channel ID`, and a one-time header update utility with a Discord GET verification. Bot Presence remains separate from the mobile channel header.
+- Validation: all 59 tests pass (no skips), build/types and dependency audit pass. The dedicated parent's first rename was GET-verified against Discord; ongoing maintenance and per-topic card details deploy through the normal guarded drain/health procedure.
+
+## v0.4.4 — presence recovery — 2026-10-15
+
+- Replace the bare `Codex` login fallback with quota-loading text. Restore complete task/quota/active-model Presence on Gateway READY/RESUMED and every client-ready event, including reconnects after the initial startup.
+- Republish every 30 seconds independently of the five-minute account/catalog polling. Coalesce task, quota, reconnect and heartbeat updates through one five-second throttle using the latest state, in line with Discord's activity update limit.
+- Include the last locally submitted Presence label/status/time in `health.json` to diagnose stale display; this records publication to the Gateway transport, not visual confirmation from a Discord client.
+- Validation: all 55 tests pass (no skips), including a runtime reconnect event; types/build and dependency audit pass. Actual app-server smoke is repeated by the guarded publisher before draining current work.
+
+## v0.4.3 — model acknowledgement recovery — 2026-10-12
+
+- Release the control-state queue before delivering confirmations, so a delayed Discord reply cannot block STOP or later controls in the same topic.
+- Retry transient TLS/socket failures only for idempotent interaction-reply PATCHes, up to three attempts. Never repeat the model mutation or a message-creation POST.
+- Preserve successfully saved settings if confirmation delivery fails, audit the failed acknowledgement, and avoid falsely reporting that the state change was rolled back. Regression coverage includes STOP while model confirmation stalls and recovery after the observed TLS error.
+- Validation: all 51 tests pass with no skips; type/build and dependency audit pass. The guarded publisher repeats verification and actual app-server smoke before draining current work.
+
+## v0.4.2 — compact quota label — 2026-10-12
+
+- Omit the generic `codex:` bucket label from compact status-bar quota, displaying `限额：5h-79% w-92%` directly. Keep distinct additional quota buckets identifiable and retain full details in `/usage`.
+
+## v0.4.1 — topic task status — 2026-10-12
+
+- Remove hostname and project name from global Presence, including startup, to leave room for task counts, models and quota. Retain Slurm time when available.
+
+- Renew Discord typing every seven seconds throughout a running request, including Codex admission and shared-thread waits; stop renewal on all exit paths. Typing REST failures no longer fail model work.
+- Show a task card in the request's own window immediately, update queued/running/quota-paused states, and remove buttons when finished, stopped or failed. Serialize card edits and handle delayed/failed Discord delivery without reverting terminal status or resurrecting controls.
+- Validation: all 47 tests pass, including socket/runtime integration and new typing/card lifecycle cases; actual installed app-server smoke passes; dependency audit reports zero vulnerabilities. Deployment uses the guarded drain/health/rollback procedure and waits for current work to end.
+
 ## v0.4.0 — 2026-10-12
 
 - 2026-10-12: Default new and bound/resumed Codex conversations to YOLO (`danger-full-access`, `never`), including bootstrap/direct and fresh handoff settings. Preserve explicit overrides; `upgrade-service.mjs deploy --yolo` switches existing restricted instance configuration with normal rollback.

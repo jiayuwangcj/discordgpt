@@ -68,6 +68,9 @@ test("usage projects every bucket, reset time and stale snapshots without leakin
   }, async () => ({ account: { type: "chatgpt", planType: "pro", email: "private@example.com", token: "secret" } }));
   await usage.refresh();
   assert.match(usage.summary(), /5h-79% w-92%/);
+  assert.match(usage.summary(true), /^限额：5h-79% w-92% · other: 1h-25%$/);
+  assert.doesNotMatch(usage.summary(true), /codex/i);
+  assert.match(usage.summary(), /codex: 5h-79%/);
   assert.match(usage.summary(), /other: 1h-25%/);
   assert.match(usage.summary(), /2027/);
   assert.doesNotMatch(usage.summary(), /private|secret/);

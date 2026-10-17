@@ -24,6 +24,8 @@ for (const scenario of ["dm", "topics", "guild"]) transportTest(`standalone bot 
   const topics = [];
   const replies = [];
   const httpCalls = [];
+  let publishedPresence;
+  const presenceSent = new Promise(resolve => { publishedPresence = resolve; });
   let gatewaySocket;
   let sequence = 2;
   const sendMessage = (channelId, content, type = 1, author = user) => gatewaySocket.send(JSON.stringify({
@@ -96,6 +98,7 @@ for (const scenario of ["dm", "topics", "guild"]) transportTest(`standalone bot 
     socket.send(JSON.stringify({ op: 10, d: { heartbeat_interval: 1000 } }));
     socket.on("message", (raw) => {
       const event = JSON.parse(raw.toString());
+      if (event.op === 3 && event.d.activities?.[0]?.name.includes("限额：5h-80%")) publishedPresence(event.d);
       if (event.op === 1) socket.send(JSON.stringify({ op: 11 }));
       if (event.op !== 2) return;
       socket.send(JSON.stringify({ op: 0, t: "READY", s: 1, d: {
@@ -156,11 +159,19 @@ for (const scenario of ["dm", "topics", "guild"]) transportTest(`standalone bot 
   child.stdout.on("data", (chunk) => { logs += chunk; });
   child.stderr.on("data", (chunk) => { logs += chunk; });
   let timer;
+  let presenceTimer;
   try {
     const payload = await Promise.race([reply, new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error(`Bot did not reply: ${logs}\nHTTP: ${httpCalls.join("\n")}`)), 12000);
     })]);
     const state = JSON.parse(await fs.readFile(path.join(dir, "state/state.json"), "utf8"));
+    if (scenario === "dm") {
+      const packet = await Promise.race([presenceSent, new Promise((_, reject) => {
+        presenceTimer = setTimeout(() => reject(Error("No full quota presence packet reached Gateway")), 8000);
+      })]);
+      assert.match(packet.activities[0].name, /active\/\d+ tasks · 限额：5h-80%/);
+      assert.notEqual(packet.activities[0].name,"Codex");
+    }
     assert.ok(!calls.some((event) => event.method === "turn/start" && event.params.input[0].text === "unauthorized management task"));
     if (scenario === "dm") {
       assert.equal(calls.filter((event) => event.method === "turn/start").length, 1);
@@ -187,6 +198,7 @@ for (const scenario of ["dm", "topics", "guild"]) transportTest(`standalone bot 
     }
   } finally {
     clearTimeout(timer);
+    clearTimeout(presenceTimer);
     const exit = new Promise((resolve) => child.once("exit", resolve));
     child.kill("SIGTERM");
     await exit;

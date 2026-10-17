@@ -16,7 +16,9 @@ import { splitReply } from "./format.js";
 import { TaskScheduler, QuotaPause, TaskAdmissionError } from "./task-scheduler.js";
 import { ModelCatalog } from "./models.js";
 import { UsageMonitor, quotaError } from "./usage.js";
-import { LifecycleNotifier, startHeartbeat, systemMessage } from "./notifications.js";
+import { LifecycleNotifier, startHeartbeat, startTyping, systemMessage } from "./notifications.js";
+import { TaskStatusCard } from "./task-status.js";
+import { executeControl, retryEditReply } from "./control-delivery.js";
 import { RecentRequests } from "./deduplicate.js";
 import { AuditLog } from "./audit.js";
 import { startInteractionServer } from "./interactions-http.js";
@@ -25,7 +27,7 @@ import { applicationCommands, controlHelp } from "./commands.js";
 import { sessionChoices, sessionList } from "./sessions.js";
 import { loadWorkspaces } from "./workspaces.js";
 import { resolveWorkspace, topicRequest } from "./topic-routing.js";
-import { initialPresence, presenceContext, presenceLabel, slurmTimeLeft } from "./presence.js";
+import { initialPresence, presenceContext, presenceLabel, slurmTimeLeft, PresencePublisher } from "./presence.js";
 
 const state = new StateStore(config.stateDir);
 const codex = new CodexAppServer(config.codexBin, config.projectDir, {
@@ -64,6 +66,8 @@ type ControlContext = Pick<Message, "channel" | "channelId" | "guildId" | "autho
 };
 const controls = new ChannelQueue();
 const taskCards = new Map<string, string>();
+type StatusCardEntry = { card: TaskStatusCard; channelId: string; started: boolean; model?: string; effort?: string };
+const statusCards = new Map<string, StatusCardEntry>();
 const messagesSeen = new RecentRequests();
 const interactionsSeen = new RecentRequests();
 let workspaces: Record<string, string> = { default: config.projectDir };
@@ -81,6 +85,10 @@ function queueKey(channelId: string): string {
   const threadId = currentThread(channelId);
   return threadId && (state.isLinkedThread(threadId) || (!state.binding(channelId) && config.sharedThreadId === threadId))
     ? `thread:${threadId}` : channelId;
+}
+function updateCardDetails(entry: StatusCardEntry): void {
+  const settings = entry.started ? entry : state.settings(queueKey(entry.channelId));
+  entry.card.setDetails(`模型：${settings?.model ?? config.model ?? "默认模型"} · ${settings?.effort ?? config.effort ?? "默认强度"}\n${usage.summary(true)}`);
 }
 function bindingAffects(channelId: string): boolean {
   return bindingInProgress && (channelId === bindingChannel || !!bindingTarget && currentThread(channelId) === bindingTarget);
@@ -230,7 +238,7 @@ async function command(message: ControlContext, prompt: string): Promise<boolean
     const metadata = codex.threadMetadata(threadId);
     const instructionFiles = (await Promise.all(["AGENTS.md", "CLAUDE.md"].map(async (name) =>
       await fs.access(`${workspace.cwd}/${name}`).then(() => name, () => "")))).filter(Boolean);
-    await sendLong(message, ["✅ discordgpt v0.4.0 服务正常", `Workspace: ${workspace.workspace}`, `Path: ${workspace.cwd}`,
+    await sendLong(message, ["✅ discordgpt v0.4.6 服务正常", `Workspace: ${workspace.workspace}`, `Path: ${workspace.cwd}`,
       codex.userAgent ? `Codex：${codex.userAgent.slice(0, 160)}` : "Codex：版本信息暂不可用",
       `提供方：${metadata?.modelProvider ?? "app-server 配置"}`, `项目说明：${instructionFiles.join("、") || "当前目录没有 AGENTS.md/CLAUDE.md"}`,
       `已知会话：${state.threadCount()}`, metadata?.name ? `线程名：${metadata.name}` : "",
@@ -259,6 +267,7 @@ async function command(message: ControlContext, prompt: string): Promise<boolean
       try { settings = catalog.select(name, effort, state.settings(key)); }
       catch (error) { throw new UserVisibleError((error as Error).message); }
       await state.setSettings(key, settings);
+      for (const entry of statusCards.values()) if (!entry.started && queueKey(entry.channelId) === key) updateCardDetails(entry);
       logEvent("model.selected", { channelId: message.channelId, userId: message.author.id, ...settings });
       await message.reply(`已保存下一轮模型：${settings.model} · ${settings.effort ?? "无推理强度"}；当前任务继续使用原模型。${key.startsWith("thread:") ? "显式共享同一 thread 的窗口共用此设置。" : "仅影响当前会话。"}`);
     }
@@ -287,7 +296,7 @@ async function command(message: ControlContext, prompt: string): Promise<boolean
   return true;
 }
 
-async function handle(message: Message, retry = false, signal?: AbortSignal, onNativeStarted?: () => void): Promise<void> {
+async function handle(message: Message, retry = false, signal?: AbortSignal, onNativeStarted?: (model?: string, effort?: string) => void): Promise<string | undefined> {
   const workspace = resolveWorkspace(state, message.channelId, message.channel.isThread(), workspaces);
   let prompt = cleanPrompt(message);
   if (retry) prompt = "继续上一次因为额度不足而暂停的任务。先检查当前进展，避免重复执行已完成的操作。";
@@ -312,11 +321,13 @@ async function handle(message: Message, retry = false, signal?: AbortSignal, onN
     ].join("\n");
   }
   signal?.throwIfAborted();
-  if ("sendTyping" in message.channel) await message.channel.sendTyping();
+  const stopTyping = startTyping(async () => {
+    if (!signal?.aborted && "sendTyping" in message.channel) await message.channel.sendTyping();
+  });
   const stopWaitingHeartbeat = startHeartbeat((text) => sendLong(message, text));
   let threadId: string;
   try { threadId = await getThread(message.channelId); }
-  catch (error) { stopWaitingHeartbeat(); throw error; }
+  catch (error) { stopWaitingHeartbeat(); stopTyping(); throw error; }
   try {
     if (config.appServerUrl || state.isLinkedThread(threadId)) {
       // Shared terminal/Discord clients must wait rather than implicitly steering
@@ -339,8 +350,11 @@ async function handle(message: Message, retry = false, signal?: AbortSignal, onN
     try {
       signal?.throwIfAborted();
       const turnPromise = codex.runTurn(threadId, prepared.input, (turnId) => {
-        onNativeStarted?.();
-        active.set(message.channelId, { threadId, turnId, model: settings?.model ?? config.model, effort: settings?.effort });
+        const metadata = codex.threadMetadata(threadId);
+        const model = settings?.model ?? config.model ?? metadata?.model;
+        const effort = settings?.effort ?? metadata?.reasoningEffort ?? config.effort;
+        onNativeStarted?.(model, effort);
+        active.set(message.channelId, { threadId, turnId, model, effort });
         if (signal?.aborted) void codex.interrupt(threadId, turnId).catch(() => undefined);
         updatePresence();
         logEvent("turn.started", { channelId: message.channelId, messageId: message.id, threadId, turnId });
@@ -367,6 +381,7 @@ async function handle(message: Message, retry = false, signal?: AbortSignal, onN
       } else if (!relay.hasSent) {
         await sendLong(message, result.commentaryText || `Turn ended with status: ${result.status}`);
       }
+      return result.status;
     } finally {
       stopHeartbeat();
       await relay.finish();
@@ -374,7 +389,7 @@ async function handle(message: Message, retry = false, signal?: AbortSignal, onN
       active.delete(message.channelId);
       updatePresence();
     }
-  } finally { stopWaitingHeartbeat(); }
+  } finally { stopWaitingHeartbeat(); stopTyping(); }
 }
 
 client.on("messageCreate", async (message) => {
@@ -382,21 +397,39 @@ client.on("messageCreate", async (message) => {
   try {
     // Controls must bypass the queue so STOP can interrupt a running turn.
     const prompt = cleanPrompt(message);
-    const handled = await controls.enqueue(queueKey(message.channelId), async () => !parseHistoryRequest(prompt) && await command(message, prompt));
+    const handled = await executeControl(controls, queueKey(message.channelId), async (reply) =>
+      !parseHistoryRequest(prompt) && await command({ channel: message.channel, channelId: message.channelId,
+        guildId: message.guildId, author: message.author, reply }, prompt),
+      (payload) => message.reply(payload), () => {
+        console.error("Control acknowledgement failed; completed state changes retained");
+        logEvent("control.reply.failed", { channelId: message.channelId, command: prompt.split(/\s+/)[1] });
+      });
     if (handled) return;
     if (!prompt && !message.attachments.size) return;
     if (bindingAffects(message.channelId)) throw new UserVisibleError("正在切换会话绑定，请稍后重新发送任务。");
     // Binding can change while controls await RPC. Resolve the admission key now.
     const key = queueKey(message.channelId);
-    let card: Message | undefined;
     const queued = queues.size(key) > 0;
     const components = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`task:stop:${message.id}`).setLabel("终止").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`task:steer:${message.id}`).setLabel("调整方向").setStyle(ButtonStyle.Secondary));
+    const card = new TaskStatusCard(queued ? "queued" : "running",
+      async (content) => message.reply({ content, components: [components], allowedMentions: { parse: [], repliedUser: false } }),
+      (id) => taskCards.set(message.id, id));
+    const statusEntry: StatusCardEntry = { card, channelId: message.channelId, started: false };
+    statusCards.set(message.id, statusEntry); updateCardDetails(statusEntry);
     // The task is registered before REST notice creation, so STOP cannot race admission.
     let nativeStarted = false;
+    let resultStatus: string | undefined;
+    let completedAttempt = false;
     const finished = queues.enqueue({ id: message.id, key, channelId: message.channelId, userId: message.author.id },
-      (retry, signal) => handle(message, retry && nativeStarted, signal, () => { nativeStarted = true; }), async (phase, retry) => {
+      async (retry, signal) => { resultStatus = await handle(message, retry && nativeStarted, signal, (model, effort) => {
+        nativeStarted = true; Object.assign(statusEntry, { started: true, model, effort }); updateCardDetails(statusEntry);
+      }); completedAttempt = true; }, async (phase, retry) => {
+        if (phase === "running") statusEntry.started = false;
+        updateCardDetails(statusEntry);
+        card.update(phase);
+        updatePresence();
         if (phase === "running" && retry) await sendLong(message, systemMessage(usage.canResume() ? "Codex 额度已恢复，正在继续之前暂停的任务。" : "根据你的明确请求，正在继续之前暂停的任务。"));
         if (phase === "paused") {
           logEvent("task.paused", { messageId: message.id, channelId: message.channelId });
@@ -406,15 +439,14 @@ client.on("messageCreate", async (message) => {
     logEvent("task.accepted", { messageId: message.id, channelId: message.channelId, userId: message.author.id });
     // Attach rejection immediately; a failed turn cannot become an unhandled rejection while REST waits.
     const completion = finished.then(() => undefined, (error) => error);
-    if (queued) {
-      try { card = await message.reply({ content: systemMessage("任务已排队。按钮只控制此请求；调整方向仅在该请求开始后可用。"), components: [components], allowedMentions: { parse: [], repliedUser: false } }); }
-      catch { console.error("Queue card delivery failed"); }
-      if (card) taskCards.set(message.id, card.id);
-    }
+    // Show working status in every request's own topic, independently of global Presence.
+    card.show();
     const error = await completion;
     updatePresence();
     taskCards.delete(message.id);
-    if (card) await card.edit({ components: [], content: systemMessage("该请求已结束或取消。") }).catch(() => undefined);
+    updateCardDetails(statusEntry); statusCards.delete(message.id);
+    await card.finish(error && error.name !== "AbortError" ? "failed"
+      : !completedAttempt || error?.name === "AbortError" || resultStatus === "interrupted" ? "cancelled" : "completed");
     if (error && error.name !== "AbortError") throw error;
   } catch (error) {
     console.error(error);
@@ -478,10 +510,15 @@ client.on("interactionCreate", async (interaction) => {
       privateReply: true,
       author: interaction.user, reply: async (options) => {
         const payload = typeof options === "string" ? { content: options } : options;
-        if (!interaction.replied) return interaction.editReply(payload);
+        if (!interaction.replied) return retryEditReply(() => interaction.editReply(payload));
         return interaction.followUp({ ...payload, flags: MessageFlags.Ephemeral });
       } };
-    await controls.enqueue(queueKey(interaction.channelId), () => command(context, `!codex ${interaction.commandName} ${values.join(" ")}`.trim()));
+    await executeControl(controls, queueKey(interaction.channelId), (reply) =>
+      command({ ...context, reply }, `!codex ${interaction.commandName} ${values.join(" ")}`.trim()), context.reply,
+      () => {
+        console.error("Interaction acknowledgement failed; completed state changes retained");
+        logEvent("control.reply.failed", { channelId: interaction.channelId, command: interaction.commandName });
+      });
   } catch (error) {
     console.error(error);
     await interaction.editReply(error instanceof UserVisibleError ? error.message : "操作失败，原上下文和设置保留，请检查主机日志。").catch(() => undefined);
@@ -495,15 +532,22 @@ let refreshing = false;
 let commandsReady = false;
 let interactionServer: Server | undefined;
 let slurmLeft = "";
-function updatePresence() {
-  if (!client.user) return;
+const presencePublisher = new PresencePublisher(() => {
+  if (!client.user || !client.isReady()) return undefined;
   const tasks = queues.list();
   const executing = [...active.values()];
   const models = [...new Set(executing.map((t) => t.model ?? "默认模型"))];
   const status = executing.length ? "dnd" : tasks.some((t) => t.phase === "paused") ? "idle" : "online";
   const label = [presenceLabel(presence, slurmLeft), `${executing.length} active/${tasks.length} tasks`, usage.summary(true), models.join("/")].filter(Boolean).join(" · ");
-  client.user.setPresence({ status, activities: [{ name: label.slice(0, 128), type: ActivityType.Playing }] });
-}
+  return { status, activities: [{ name: label.slice(0, 128), type: ActivityType.Playing }] };
+}, (data) => { client.user!.setPresence(data); });
+function updatePresence(force = false) { presencePublisher.request(force); }
+// IDENTIFY can restore the original startup presence. Refresh the full current
+// state on both a new Gateway session and a successfully resumed session.
+client.on("shardReady", () => updatePresence(true));
+client.on("shardResume", () => updatePresence(true));
+// discord.js emits shardReady before marking the complete client ready.
+client.on("clientReady", () => updatePresence(true));
 let shuttingDown = false;
 async function refreshMetadata() {
   if (refreshing) return;
@@ -512,6 +556,7 @@ async function refreshMetadata() {
     const results = await Promise.allSettled([catalog.refresh(), usage.refresh()]);
     if (results.some((r) => r.status === "rejected")) console.error("Model/usage metadata temporarily unavailable");
     if (usage.canResume()) queues.resumePaused();
+    for (const entry of statusCards.values()) updateCardDetails(entry);
     slurmLeft = await slurmTimeLeft(presence.slurmJobId);
     updatePresence();
   } finally { refreshing = false; }
@@ -523,7 +568,8 @@ async function writeHealth() {
   const file = `${config.stateDir}/health.json`;
   const data = JSON.stringify({ pid: process.pid, at: new Date().toISOString(), ready: client.isReady(), draining: queues.draining,
     active: queues.list().filter((t) => t.phase === "running").length, outstanding: queues.list().length,
-    release: process.cwd(), commandsReady, modelsStale: catalog.stale, usageStale: usage.stale });
+    release: process.cwd(), commandsReady, modelsStale: catalog.stale, usageStale: usage.stale,
+    presence: presencePublisher.lastPublished });
   await fs.writeFile(file + ".tmp", data, { mode: 0o600 });
   await fs.rename(file + ".tmp", file);
 }
@@ -533,6 +579,7 @@ client.once("clientReady", () => {
   logEvent("service.ready");
   void lifecycle.ready();
   updatePresence();
+  presenceTimer = setInterval(() => updatePresence(true), 30000); presenceTimer.unref();
   void refreshMetadata();
   refreshTimer = setInterval(() => void refreshMetadata(), 5 * 60_000); refreshTimer.unref();
   void writeHealth().catch(() => console.error("Health write failed"));
@@ -612,6 +659,7 @@ try {
 async function shutdown(code: number, reason: string) {
   if (shuttingDown) return;
   shuttingDown = true; queues.accepting = false;
+  presencePublisher.stop();
   for (const timer of [refreshTimer, healthTimer, presenceTimer]) if (timer) clearInterval(timer);
   const deadline = setTimeout(() => process.exit(code), 15000); deadline.unref();
   logEvent("service.stopping", { count: queues.list().length });

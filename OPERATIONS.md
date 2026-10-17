@@ -77,6 +77,21 @@ there is no requirement to source credentials as shell code.
 
 ## Recovery
 
+The mobile thread subtitle is Discord's parent channel name, not a bot status
+widget. The v0.4.5 channel-renaming experiment was removed in v0.4.6; upgrading
+removes its retired instance setting. Keep task state/model/quota in cards and
+`/status`/`/usage`. Original-name records are retained privately for rollback,
+but the service no longer reads or writes `quota-headers.json`. Removing status
+presentation does not delete parent channels or their dependent threads.
+
+If `/model` remains on “thinking”, inspect `model.selected` and the window's
+persisted settings before retrying the change. Selection is saved before its
+Discord confirmation; a network/TLS reply failure does not mean saving failed.
+Since v0.4.3, confirmation delivery occurs outside the control-state queue,
+transient interaction PATCH failures are retried, and exhausted delivery failures
+are audited as `control.reply.failed`. `/status` reports the next-turn selection.
+Existing running turns keep their original model until they end.
+
 Workspace topics use Discord private threads, created from a guild text channel
 with `!codex topic <alias> [name]`. Grant Create Private Threads, Send Messages in
 Threads and Manage Threads in addition to the base permissions. The authorized

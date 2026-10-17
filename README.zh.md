@@ -4,9 +4,15 @@
 
 本项目已从 `wbot` 独立：不包含交易、行情、数据库或正式推送频道逻辑。迁移范围和后续工作见 [MIGRATION.md](MIGRATION.md)，开源方案比较与来源说明见 [UPSTREAM.md](UPSTREAM.md)。
 
-当前代码及线上版本均为 **v0.4.0**（2026-10-12 上线）。42 项完整测试、真实 app-server smoke、服务健康检查及 Discord 公网签名握手通过；原会话绑定保留，线上权限已切换为 `danger-full-access / never`。人工 slash 命令及按钮点击验收仍待使用方确认。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前代码和已部署服务版本均为 **v0.4.6**，撤回用频道名显示限额的方案，保留话题内的模型和状态卡。父频道名称已恢复，自动改名配置已关闭。原会话绑定保留，线上权限为 `danger-full-access / never`。部署、恢复和真实私聊验收步骤见 [OPERATIONS.md](OPERATIONS.md)，验证记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 默认只在任务完成后统一回复。`DISCORD_PROGRESS_ENABLED=true` 可打开工具执行前的进度消息。停止和状态指令立即执行，不会排在长任务后面；同频道任务串行，不同频道可并行，显式绑定同一 shared thread 的频道共用队列。
+
+每个请求在自己的话题或私聊显示任务状态卡：排队、工作中、额度暂停、结束或失败。执行期间每 7 秒续发 Discord“正在输入”提示；请求结束后停止续发并移除卡片按钮。关闭进度消息不影响这些状态提示，状态发送失败也不会使 Codex 任务失败。
+
+手机话题顶部，话题名下方的一行是 Discord 内置的父频道名称，机器人不能把它当作独立状态栏隐藏或定制。已移除自动改名方案；模型、限额和工作状态在任务卡及 `/status`、`/usage` 中显示。现有话题依附父频道，移除状态展示不会删除频道或聊天记录。
+
+各话题的模型／推理强度、工作状态和限额放在该请求的状态卡中。运行任务的模型固定显示实际启动时使用的模型，切换模型只改变下一轮及待执行请求，避免多话题模型互相冒充。
 
 这是 `claude-code-discord-multibot` 思路的 Codex 原生实现。它不依赖 Claude Discord plugin，而是直接使用：
 
@@ -28,7 +34,7 @@
 - 按需读取当前频道最近 1–100 条历史消息；默认不会读取
 - 附件 URL 会加入任务上下文
 - 超过 Discord 消息长度的回复自动分段
-- Discord 在线绿点与 HPC presence：显示计算节点、Slurm 剩余时间和项目名，每 15 分钟刷新
+- Discord 在线状态栏：显示任务、模型和用量，有 Slurm 任务时保留剩余时间，不显示主机名和项目名
 
 ## 工作区话题
 
@@ -142,7 +148,9 @@ codex-dc
 
 Discord 的 PNG、JPEG 和 WebP 图片附件会从 Discord CDN 受限下载（单张最多 20 MiB），作为 Codex app-server 的 `localImage` 输入，因此 Codex 可以直接识别截图。临时图片在 turn 结束后自动删除；其他附件仍以 URL 和文件名作为文本上下文。
 
-Bot presence 会显示 `node177 · ⏳6d19h · project-name`。绿点表示 Discord Gateway 当前仍连接；进程或 allocation 结束后会自动变灰。节点来自 `SLURMD_NODENAME`/hostname，剩余时间由当前进程的 `SLURM_JOB_ID` 异步查询 `squeue %L`，每 15 分钟刷新一次；非 Slurm 环境自动退化为 `node · project`。
+Bot presence 显示任务数量、剩余用量和执行中模型，不显示主机名或工程名。Slurm 环境还会显示 `⏳6d19h` 这类剩余时间，由当前进程的 `SLURM_JOB_ID` 异步查询 `squeue %L`。绿点表示当前在线，任务执行时显示忙碌状态；进程或 allocation 结束后会自动变灰。
+
+启动时显示“限额：读取中”，连接完成、重连恢复及任务阶段变化时同步完整状态；每 30 秒再次同步，账户用量仍按五分钟周期读取。快速变化会合并为最新状态，发布间隔至少五秒。`health.json` 的 `presence` 字段记录最近提交给 Gateway 的文字、在线状态和时间，不代表 Discord 客户端已经显示。
 
 可用函数：
 
